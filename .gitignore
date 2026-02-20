@@ -1,0 +1,24 @@
+# ── PlatformIO ────────────────────────────────────────────────
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# ── Android ───────────────────────────────────────────────────
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/**/*.iml
+android/captures/
+android/.externalNativeBuild/
+android/.cxx/
+
+# ── macOS ─────────────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+
+# ── IDEs ──────────────────────────────────────────────────────
+.vscode/
+*.swp
+*.swo
