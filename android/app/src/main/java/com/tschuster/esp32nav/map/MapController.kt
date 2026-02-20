@@ -15,6 +15,7 @@ import org.osmdroid.events.ZoomEvent
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.Polyline
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 
@@ -32,6 +33,7 @@ class MapController(context: Context) {
 
     val mapView: MapView
     private val locationOverlay: MyLocationNewOverlay
+    private var routeOverlay: Polyline? = null
     private var following = true
 
     init {
@@ -100,6 +102,22 @@ class MapController(context: Context) {
 
     fun setZoom(zoom: Int) {
         mapView.controller.setZoom(zoom.toDouble())
+    }
+
+    /** Dibuja (o borra) la ruta como polilínea azul sobre el mapa Android. */
+    fun setRoute(points: List<Pair<Double, Double>>) {
+        routeOverlay?.let { mapView.overlays.remove(it) }
+        routeOverlay = null
+        if (points.isNotEmpty()) {
+            routeOverlay = Polyline().apply {
+                setPoints(points.map { (lat, lon) -> GeoPoint(lat, lon) })
+                outlinePaint.color = Color.rgb(0x44, 0x88, 0xFF)
+                outlinePaint.strokeWidth = 8f
+            }
+            // Insertar detrás del overlay de ubicación para que el punto quede encima
+            mapView.overlays.add(0, routeOverlay)
+        }
+        mapView.invalidate()
     }
 
     /**

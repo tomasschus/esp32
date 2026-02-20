@@ -8,6 +8,7 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 data class NavStep(
@@ -20,7 +21,8 @@ data class NavStep(
 data class NavRoute(
     val steps: List<NavStep>,
     val totalDistanceM: Int,
-    val totalDurationSec: Int
+    val totalDurationSec: Int,
+    val geometry: List<Pair<Double, Double>> = emptyList()  // [lat, lon] pairs
 ) {
     val etaMin: Int get() = totalDurationSec / 60
 }
@@ -76,10 +78,10 @@ class NavRouter {
         fromLat: Double, fromLon: Double,
         toLat: Double,   toLon: Double
     ): NavRoute? = withContext(Dispatchers.IO) {
+        val fmt = { v: Double -> String.format(Locale.US, "%.5f", v) }
         val url = "http://router.project-osrm.org/route/v1/driving/" +
-                  "${"%.5f".format(fromLon)},${"%.5f".format(fromLat)};" +
-                  "${"%.5f".format(toLon)},${"%.5f".format(toLat)}" +
-                  "?steps=true&overview=false"
+                  "${fmt(fromLon)},${fmt(fromLat)};${fmt(toLon)},${fmt(toLat)}" +
+                  "?steps=true&overview=full&geometries=geojson"
         val request = Request.Builder().url(url).build()
         try {
             client.newCall(request).execute().use { resp ->
@@ -108,7 +110,18 @@ class NavRouter {
                         )
                     )
                 }
-                NavRoute(steps, distM, durS)
+
+                // Parse full route geometry (GeoJSON LineString coordinates: [lon, lat])
+                val geometry = mutableListOf<Pair<Double, Double>>()
+                val geomCoords = route.optJSONObject("geometry")?.optJSONArray("coordinates")
+                if (geomCoords != null) {
+                    for (i in 0 until geomCoords.length()) {
+                        val pt = geomCoords.getJSONArray(i)
+                        geometry.add(pt.getDouble(1) to pt.getDouble(0))  // lat, lon
+                    }
+                }
+
+                NavRoute(steps, distM, durS, geometry)
             }
         } catch (e: Exception) { null }
     }

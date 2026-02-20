@@ -111,10 +111,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             LaunchedEffect(Unit) {
                 vm.registerMapCallbacks(
-                        capture      = { mapController.captureJpeg() },
                         enableFollow = { mapController.enableFollow() },
                         setCenter    = { lat, lon -> mapController.animateTo(lat, lon) },
                         setZoom      = { z -> mapController.setZoom(z) },
+                        setRoute     = { pts -> mapController.setRoute(pts) },
                 )
             }
 

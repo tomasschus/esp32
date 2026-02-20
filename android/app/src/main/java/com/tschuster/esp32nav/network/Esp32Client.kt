@@ -119,6 +119,11 @@ class Esp32Client {
         }
     }
 
+    // ── Enviar frame vectorial ───────────────────────────────────
+    fun sendVectorFrame(json: String) {
+        ws?.send(json)
+    }
+
     // ── Enviar paso de navegación ────────────────────────────────
     fun sendNavStep(step: String, distanceM: Int, etaMin: Int) {
         val safeStep = step.replace("\"", "'")
