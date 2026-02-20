@@ -40,4 +40,7 @@ dependencies {
     implementation(libs.play.services.location)
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)
+
+    // Mapa OSM interactivo
+    implementation("org.osmdroid:osmdroid-android:6.1.18")
 }

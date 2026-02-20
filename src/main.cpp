@@ -29,6 +29,9 @@ static AXS15231B_Touch touch(Touch_SCL, Touch_SDA, Touch_INT, Touch_ADDR,
 
 static volatile bool s_display_dirty = false;
 
+/* true mientras la pantalla de mapas está activa en portrait */
+static volatile bool s_portrait = false;
+
 static uint32_t lvgl_tick_cb(void) { return millis(); }
 
 static void disp_flush_cb(lv_display_t *disp, const lv_area_t *area,
@@ -43,6 +46,16 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
   uint16_t x, y;
   if (touch.touched()) {
     touch.readData(&x, &y);
+
+    if (s_portrait) {
+      /* El touch driver con TFT_ROT=1 entrega coords landscape (x∈[0,479],
+       * y∈[0,319]). En modo portrait LVGL espera (x∈[0,319], y∈[0,479]).
+       * Transformación 90° CCW: px = ly,  py = (DISP_HOR_RES-1) - lx  */
+      uint16_t lx = x, ly = y;
+      x = ly;
+      y = (DISP_HOR_RES - 1) - lx;
+    }
+
     data->point.x = (lv_coord_t)x;
     data->point.y = (lv_coord_t)y;
     data->state = LV_INDEV_STATE_PRESSED;
@@ -135,3 +148,47 @@ void loop() {
 
 Arduino_Canvas *get_canvas() { return gfx; }
 AXS15231B_Touch *get_touch() { return &touch; }
+
+static disp_rot_t s_current_rot = DISP_ROT_LANDSCAPE;
+
+/*
+ * Cambia la orientación del display en runtime usando rotación hardware del
+ * canvas GFX (gfx->setRotation) en lugar de rotación software de LVGL.
+ *
+ * Ventaja: las dimensiones del canvas cambian realmente → fillScreen cubre
+ * TODOS los píxeles físicos → sin rastro del contenido anterior.
+ * LVGL recibe las nuevas dimensiones vía lv_display_set_resolution y marca
+ * todo el display como dirty, garantizando un redibujado completo.
+ *
+ * Llamar ANTES de lv_screen_load() para que la resolución LVGL esté
+ * correcta cuando se renderice la nueva pantalla.
+ */
+void display_set_rotation(disp_rot_t rot) {
+  if (rot == s_current_rot)
+    return;
+  s_current_rot = rot;
+
+  /* 1. Limpiar canvas físico completo (dimensiones actuales aún válidas) */
+  gfx->fillScreen(0x0000);
+  gfx->flush();
+
+  lv_display_t *disp = lv_display_get_default();
+
+  if (rot == DISP_ROT_PORTRAIT) {
+    /* Canvas GFX → portrait: rotation=0 → width=320, height=480 */
+    gfx->setRotation(0);
+    /* LVGL lógico 320×480 (marca todo el display dirty) */
+    lv_display_set_resolution(disp, 320, 480);
+    s_portrait = true;
+    Serial.println("[Disp] → portrait 320×480");
+  } else {
+    /* Canvas GFX → landscape: rotation=1 → width=480, height=320 */
+    gfx->setRotation(1);
+    /* LVGL lógico 480×320 */
+    lv_display_set_resolution(disp, 480, 320);
+    s_portrait = false;
+    Serial.println("[Disp] → landscape 480×320");
+  }
+}
+
+disp_rot_t display_get_rotation(void) { return s_current_rot; }

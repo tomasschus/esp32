@@ -7,7 +7,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tschuster.esp32nav.location.LocationTracker
 import com.tschuster.esp32nav.network.Esp32Client
-import com.tschuster.esp32nav.network.MapFetcher
 import com.tschuster.esp32nav.network.NavRoute
 import com.tschuster.esp32nav.network.NavRouter
 import com.tschuster.esp32nav.network.NetworkManager
@@ -16,7 +15,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.launchIn
@@ -45,33 +43,60 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val networkManager = (app as ESP32NavApp).networkManager
     private val locationTracker = LocationTracker(app)
-    private val mapFetcher = MapFetcher()
     private val navRouter = NavRouter()
     private val esp32Client = Esp32Client()
 
     private val _ui = MutableStateFlow(UiState(lastSsid = networkManager.getLastSsid()))
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
-    private val _mapTile = MutableStateFlow<ByteArray?>(null)
-    val mapTile: StateFlow<ByteArray?> = _mapTile.asStateFlow()
-
     private var lastLocation: Location? = null
     private var mapJob: Job? = null
     private var wsRetryJob: Job? = null
     private var stepIdx = 0
 
+    // Callbacks registrados por la UI para controlar el MapView
+    private var captureCallback: (() -> ByteArray?)? = null
+    private var enableFollowCallback: (() -> Unit)? = null
+    private var setCenterCallback: ((Double, Double) -> Unit)? = null
+    private var setZoomCallback: ((Int) -> Unit)? = null
+    private var initialCenterDone = false
+
     init {
         observeNetworkManager()
         observeLocation()
-        networkManager.requestCellular() // datos móviles desde el inicio (sin esperar WiFi)
+        networkManager.requestCellular()
     }
 
-    // ── Scan ─────────────────────────────────────────────────────────
-    fun startScan() {
-        networkManager.startScan()
+    // ── Callbacks del mapa ────────────────────────────────────────────
+    /**
+     * Registrado desde la Activity una vez que el MapView está listo.
+     * [capture]      → dibuja el MapView y devuelve JPEG bytes (hilo principal).
+     * [enableFollow] → reactiva el seguimiento automático de ubicación.
+     * [setZoom]      → cambia el zoom del mapa.
+     */
+    fun registerMapCallbacks(
+            capture: () -> ByteArray?,
+            enableFollow: () -> Unit,
+            setCenter: (Double, Double) -> Unit,
+            setZoom: (Int) -> Unit,
+    ) {
+        captureCallback = capture
+        enableFollowCallback = enableFollow
+        setCenterCallback = setCenter
+        setZoomCallback = setZoom
+        // Si ya tenemos ubicación cuando se registran los callbacks (Activity recreada),
+        // centrar inmediatamente sin esperar al próximo tick de GPS.
+        if (!initialCenterDone) {
+            lastLocation?.let { loc ->
+                setCenter(loc.latitude, loc.longitude)
+                initialCenterDone = true
+            }
+        }
     }
 
-    // ── Connect ───────────────────────────────────────────────────────
+    // ── Scan / Connect ────────────────────────────────────────────────
+    fun startScan() = networkManager.startScan()
+
     fun connectToDevice(ssid: String, password: String = "") {
         _ui.value =
                 _ui.value.copy(
@@ -81,9 +106,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         networkManager.connectToEsp32(ssid, password)
     }
 
-    // ── Observe NetworkManager flows ──────────────────────────────────
+    // ── Observe NetworkManager ────────────────────────────────────────
     private fun observeNetworkManager() {
-        // scan/wifi state
         networkManager
                 .wifiState
                 .onEach { state ->
@@ -94,7 +118,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                     isConnecting = state == NetworkManager.WifiState.CONNECTING,
                             )
                     if (state == NetworkManager.WifiState.UNAVAILABLE) {
-                        Log.e(TAG, "UNAVAILABLE: conexión fallida o timeout")
                         _ui.value =
                                 _ui.value.copy(
                                         isConnecting = false,
@@ -106,21 +129,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 .launchIn(viewModelScope)
 
-        // scan results
         networkManager
                 .scanResults
                 .onEach { results -> _ui.value = _ui.value.copy(scanResults = results) }
                 .launchIn(viewModelScope)
 
-        // connected to ESP32 network
         networkManager
                 .esp32Network
                 .filterNotNull()
                 .onEach { network ->
-                    Log.i(
-                            TAG,
-                            "VM: esp32Network recibido → network=$network llamando esp32Client.connect(network) + startMapLoop + wsRetry"
-                    )
+                    Log.i(TAG, "esp32Network recibido → conectando WS + iniciando map loop")
                     _ui.value =
                             _ui.value.copy(
                                     isConnecting = false,
@@ -134,21 +152,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 .launchIn(viewModelScope)
 
-        // red con internet (datos móviles preferred) — para tiles, geocoding y routing
+        // La red celular se usa para geocoding y routing (NavRouter)
         networkManager
                 .cellNetwork
                 .filterNotNull()
                 .onEach { network ->
-                    Log.i(
-                            TAG,
-                            "VM: cellNetwork recibido → network=$network → setCellularNetwork + setInternetNetwork (tiles y rutas usarán esta red)"
-                    )
-                    mapFetcher.setCellularNetwork(network, getApplication())
+                    Log.i(TAG, "cellNetwork recibido → NavRouter usará esta red")
                     navRouter.setInternetNetwork(network)
                 }
                 .launchIn(viewModelScope)
 
-        // disconnected
         networkManager
                 .esp32Network
                 .filter { it == null }
@@ -162,7 +175,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .launchIn(viewModelScope)
     }
 
-    // ── Location ─────────────────────────────────────────────────────
+    // ── Location ──────────────────────────────────────────────────────
     private fun observeLocation() {
         locationTracker
                 .locationFlow()
@@ -171,88 +184,74 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     _ui.value = _ui.value.copy(location = loc)
                     esp32Client.sendGps(loc.latitude, loc.longitude)
                     advanceNavStep(loc)
+                    // Primera ubicación: centrar el mapa explícitamente una sola vez.
+                    // Las siguientes actualizaciones las maneja enableFollowLocation().
+                    if (!initialCenterDone && setCenterCallback != null) {
+                        setCenterCallback?.invoke(loc.latitude, loc.longitude)
+                        initialCenterDone = true
+                    }
                 }
                 .launchIn(viewModelScope)
     }
 
     // ── WebSocket retry loop ──────────────────────────────────────────
-    // El servidor WebSocket del ESP32 solo arranca cuando el usuario navega a la
-    // pantalla de Mapas. Reintentamos cada 5 s hasta que conecte.
     private fun startWsRetryLoop(network: android.net.Network) {
         wsRetryJob?.cancel()
-        Log.d(TAG, "startWsRetryLoop: network=$network (misma red que esp32Network)")
         wsRetryJob =
                 viewModelScope.launch {
                     esp32Client.state.collect { state ->
                         if (state == Esp32Client.State.ERROR && _ui.value.isConnected) {
-                            Log.w(
-                                    TAG,
-                                    "VM: WebSocket en ERROR, reintentando en 5 s con network=$network"
-                            )
+                            Log.w(TAG, "WebSocket en ERROR, reintentando en 5 s")
                             delay(5_000L)
-                            if (_ui.value.isConnected) {
-                                Log.d(TAG, "VM: wsRetry llamando esp32Client.connect(network)")
-                                esp32Client.connect(network)
-                            }
+                            if (_ui.value.isConnected) esp32Client.connect(network)
                         }
                     }
                 }
     }
 
-    // ── Map loop ─────────────────────────────────────────────────────
+    // ── Map loop ──────────────────────────────────────────────────────
+    // Captura el MapView (renderizado en pantalla con tiles OSM reales)
+    // y envía el JPEG al ESP32 por WebSocket cada 5 segundos.
     private fun startMapLoop() {
         mapJob?.cancel()
-        Log.i(
-                TAG,
-                "VM: startMapLoop iniciado (cada 5s mapFetcher.fetch → si cellClient set, usa red celular)"
-        )
+        Log.i(TAG, "startMapLoop: capturando mapa OSM cada 5 s → ESP32")
         mapJob =
                 viewModelScope.launch {
                     while (true) {
-                        val loc = lastLocation
-                        if (loc != null) {
-                            Log.d(
-                                    TAG,
-                                    "VM: mapLoop iteración loc=${loc.latitude},${loc.longitude} zoom=${_ui.value.zoom} → mapFetcher.fetch()"
-                            )
-                            val tile = mapFetcher.fetch(loc.latitude, loc.longitude, _ui.value.zoom)
+                        if (_ui.value.isConnected) {
+                            val tile = captureCallback?.invoke()
                             if (tile != null) {
-                                Log.i(
-                                        TAG,
-                                        "VM: tile descargado (${tile.size} bytes) → enviando al ESP32"
-                                )
-                                _mapTile.value = tile
+                                Log.d(TAG, "tile capturado: ${tile.size} bytes → enviando al ESP32")
                                 esp32Client.sendMapTile(tile)
                             } else {
-                                Log.w(
-                                        TAG,
-                                        "VM: tile==null (cellClient null o fetch falló; ver logs ESP32Nav/Map)"
-                                )
+                                Log.d(TAG, "tile null: MapView no listo aún")
                             }
-                        } else {
-                            Log.d(TAG, "VM: mapLoop sin ubicación aún, esperando 5s")
                         }
                         delay(5_000L)
                     }
                 }
     }
 
+    // ── Zoom / centrar ────────────────────────────────────────────────
     fun setZoom(zoom: Int) {
-        _ui.value = _ui.value.copy(zoom = zoom.coerceIn(10, 19))
+        val z = zoom.coerceIn(10, 19)
+        _ui.value = _ui.value.copy(zoom = z)
+        setZoomCallback?.invoke(z)
     }
 
     fun centerOnLocation() {
-        val loc = lastLocation ?: return
+        // Reactiva el seguimiento automático (OSMDroid centra en la última ubicación conocida)
+        enableFollowCallback?.invoke()
+        // Captura inmediata tras que el mapa se re-centra
         viewModelScope.launch {
-            val tile = mapFetcher.fetch(loc.latitude, loc.longitude, _ui.value.zoom)
-            if (tile != null) {
-                _mapTile.value = tile
-                esp32Client.sendMapTile(tile)
-            }
+            delay(600L)
+            val tile = captureCallback?.invoke() ?: return@launch
+            Log.d(TAG, "centerOnLocation: tile ${tile.size} bytes → ESP32")
+            esp32Client.sendMapTile(tile)
         }
     }
 
-    // ── Navigation ───────────────────────────────────────────────────
+    // ── Navegación ────────────────────────────────────────────────────
     fun searchRoute(destination: String) {
         if (destination.isBlank()) return
         val origin =
@@ -265,7 +264,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _ui.value.copy(
                         isSearchingRoute = true,
                         navDestination = destination,
-                        errorMsg = null
+                        errorMsg = null,
                 )
         viewModelScope.launch {
             val destCoord = navRouter.geocode(destination)
@@ -273,7 +272,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _ui.value =
                         _ui.value.copy(
                                 isSearchingRoute = false,
-                                errorMsg = "No se encontró \"$destination\""
+                                errorMsg = "No se encontró \"$destination\"",
                         )
                 return@launch
             }
@@ -288,7 +287,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _ui.value =
                         _ui.value.copy(
                                 isSearchingRoute = false,
-                                errorMsg = "No se pudo calcular la ruta"
+                                errorMsg = "No se pudo calcular la ruta",
                         )
                 return@launch
             }

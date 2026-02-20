@@ -64,13 +64,10 @@ class NetworkManager(private val context: Context) {
         if (net != null) {
             Log.i(
                     TAG,
-                    "cellNetwork emitido → MapFetcher/NavRouter usarán esta red para tiles e internet (net=$net)"
+                    "cellNetwork emitido → NavRouter usará esta red para geocoding y routing (net=$net)"
             )
         } else {
-            Log.w(
-                    TAG,
-                    "cellNetwork=null → MapFetcher.fetch() devolverá null hasta que haya celular/fallback"
-            )
+            Log.w(TAG, "cellNetwork=null → NavRouter sin red de internet")
         }
     }
 
