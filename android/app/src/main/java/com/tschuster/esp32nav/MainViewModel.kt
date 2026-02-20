@@ -52,6 +52,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var lastLocation: Location? = null
     private var mapJob: Job? = null
     private var wsRetryJob: Job? = null
+    private var autoReconnectJob: Job? = null
     private var stepIdx = 0
 
     // Callbacks registrados por la UI para controlar el MapView
@@ -65,6 +66,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         observeNetworkManager()
         observeLocation()
         networkManager.requestCellular()
+        startAutoReconnect()
     }
 
     // ── Callbacks del mapa ────────────────────────────────────────────
@@ -118,12 +120,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                     isConnecting = state == NetworkManager.WifiState.CONNECTING,
                             )
                     if (state == NetworkManager.WifiState.UNAVAILABLE) {
+                        val autoReconnecting = autoReconnectJob?.isActive == true
                         _ui.value =
                                 _ui.value.copy(
                                         isConnecting = false,
-                                        status = "Desconectado",
-                                        errorMsg =
-                                                "No se pudo conectar. ¿Aprobaste el diálogo del sistema? Verificá que el ESP32 esté encendido.",
+                                        status = if (autoReconnecting) "Buscando ESP32…" else "Desconectado",
+                                        errorMsg = if (autoReconnecting) null
+                                        else "No se pudo conectar. ¿Aprobaste el diálogo del sistema? Verificá que el ESP32 esté encendido.",
                                 )
                     }
                 }
@@ -146,6 +149,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                     lastSsid = networkManager.getLastSsid(),
                                     status = "Conectado",
                             )
+                    autoReconnectJob?.cancel()
                     esp32Client.connect(network)
                     startMapLoop()
                     startWsRetryLoop(network)
@@ -170,6 +174,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         _ui.value = _ui.value.copy(isConnected = false, status = "Desconectado")
                         mapJob?.cancel()
                         wsRetryJob?.cancel()
+                        startAutoReconnect()
                     }
                 }
                 .launchIn(viewModelScope)
@@ -209,12 +214,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
     }
 
+    // ── Auto-reconexión ───────────────────────────────────────────────
+    // Si hay un SSID guardado y no estamos conectados, intenta reconectar
+    // cada 15 s de forma silenciosa (sin mostrar error al usuario).
+    private fun startAutoReconnect() {
+        val ssid = networkManager.getLastSsid() ?: return
+        if (autoReconnectJob?.isActive == true) return
+        Log.i(TAG, "startAutoReconnect: iniciando loop para '$ssid'")
+        autoReconnectJob =
+                viewModelScope.launch {
+                    var delaySec = 5L
+                    while (true) {
+                        delay(delaySec * 1_000L)
+                        if (_ui.value.isConnected) break
+                        val ws = networkManager.wifiState.value
+                        if (ws == NetworkManager.WifiState.IDLE ||
+                                        ws == NetworkManager.WifiState.UNAVAILABLE) {
+                            Log.i(TAG, "autoReconnect: intentando reconectar a '$ssid' (próximo delay=${delaySec}s)")
+                            _ui.value = _ui.value.copy(status = "Buscando ESP32…", errorMsg = null)
+                            networkManager.connectToEsp32(ssid)
+                            if (delaySec < 15L) delaySec += 5L
+                        }
+                    }
+                }
+    }
+
     // ── Map loop ──────────────────────────────────────────────────────
     // Captura el MapView (renderizado en pantalla con tiles OSM reales)
     // y envía el JPEG al ESP32 por WebSocket cada 5 segundos.
     private fun startMapLoop() {
         mapJob?.cancel()
-        Log.i(TAG, "startMapLoop: capturando mapa OSM cada 5 s → ESP32")
+        Log.i(TAG, "startMapLoop: capturando mapa OSM cada 1 s → ESP32")
         mapJob =
                 viewModelScope.launch {
                     while (true) {
@@ -227,7 +257,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 Log.d(TAG, "tile null: MapView no listo aún")
                             }
                         }
-                        delay(5_000L)
+                        delay(1_000L)
                     }
                 }
     }
@@ -334,6 +364,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
         mapJob?.cancel()
         wsRetryJob?.cancel()
+        autoReconnectJob?.cancel()
         esp32Client.disconnect()
     }
 }

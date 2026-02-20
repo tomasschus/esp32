@@ -103,10 +103,20 @@ class MapController(context: Context) {
     }
 
     /**
-     * Captura el estado actual del mapa como JPEG 320×480 (portrait). Debe llamarse desde el hilo
-     * principal. Devuelve null si el view no está listo.
+     * Captura el estado actual del mapa como JPEG [outW]×[outH] para enviar al ESP32.
+     *
+     * Estrategia de calidad:
+     * 1. Se captura a doble resolución (2× outW, 2× outH) en ARGB_8888 → más detalle y
+     * ```
+     *     antialiasing en el paso de escala (supersampling).
+     * ```
+     * 2. Se escala a la resolución objetivo con filtro bilineal (filter=true).
+     * 3. Se comprime a JPEG con [quality] alto (92 por defecto).
+     *
+     * Usar ARGB_8888 (no RGB_565) evita la pérdida de color previa al JPEG. Debe llamarse desde el
+     * hilo principal. Devuelve null si el view no está listo.
      */
-    fun captureJpeg(outW: Int = 320, outH: Int = 480, quality: Int = 85): ByteArray? {
+    fun captureJpeg(outW: Int = 320, outH: Int = 480, quality: Int = 75): ByteArray? {
         val w = mapView.width
         val h = mapView.height
         if (w <= 0 || h <= 0) {
@@ -114,16 +124,18 @@ class MapController(context: Context) {
             return null
         }
 
-        val raw = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565)
+        // Supersampling: capturar a 2× y luego reducir → menos aliasing en bordes y texto
+        val ssW = (outW * 2).coerceAtMost(w)
+        val ssH = (outH * 2).coerceAtMost(h)
+
+        // ARGB_8888 preserva los 24 bits de color antes de la compresión JPEG
+        val raw = Bitmap.createBitmap(ssW, ssH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(raw)
+        canvas.scale(ssW.toFloat() / w, ssH.toFloat() / h)
         mapView.draw(canvas)
 
-        val scaled =
-                if (w != outW || h != outH) {
-                    Bitmap.createScaledBitmap(raw, outW, outH, true).also { raw.recycle() }
-                } else {
-                    raw
-                }
+        val scaled = Bitmap.createScaledBitmap(raw, outW, outH, true)
+        raw.recycle()
 
         return ByteArrayOutputStream()
                 .use { out ->
@@ -133,7 +145,10 @@ class MapController(context: Context) {
                 }
                 .also {
                     if (it != null)
-                            Log.d(TAG, "captureJpeg: ${it.size} bytes (${w}x${h}→${outW}x${outH})")
+                            Log.d(
+                                    TAG,
+                                    "captureJpeg: ${it.size} bytes (ss=${ssW}x${ssH}→${outW}x${outH} q=$quality)"
+                            )
                 }
     }
 

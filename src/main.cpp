@@ -48,12 +48,16 @@ static void touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
     touch.readData(&x, &y);
 
     if (s_portrait) {
-      /* El touch driver con TFT_ROT=1 entrega coords landscape (x∈[0,479],
-       * y∈[0,319]). En modo portrait LVGL espera (x∈[0,319], y∈[0,479]).
-       * Transformación 90° CCW: px = ly,  py = (DISP_HOR_RES-1) - lx  */
+      /* El touch driver con TFT_ROT=1 entrega coords landscape:
+       *   lx = raw_y  (portrait_y del panel nativo)
+       *   ly = 319 - raw_x  (portrait_x del panel nativo, invertido)
+       * En portrait LVGL espera (x∈[0,319], y∈[0,479]) = coords nativas.
+       * Para recuperarlas:
+       *   portrait_x = raw_x = (DISP_VER_RES-1) - ly
+       *   portrait_y = raw_y = lx                              */
       uint16_t lx = x, ly = y;
-      x = ly;
-      y = (DISP_HOR_RES - 1) - lx;
+      x = (DISP_VER_RES - 1) - ly;
+      y = lx;
     }
 
     data->point.x = (lv_coord_t)x;
