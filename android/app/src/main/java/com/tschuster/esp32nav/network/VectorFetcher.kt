@@ -51,7 +51,7 @@ class VectorFetcher {
         if (lastQueryLat.isNaN()) return true
         val dist = FloatArray(1)
         Location.distanceBetween(lat, lon, lastQueryLat, lastQueryLon, dist)
-        return dist[0] > 200f
+        return dist[0] > 150f
     }
 
     /** Consulta Overpass y actualiza el caché. Llamar desde Dispatchers.IO. */
@@ -62,7 +62,7 @@ class VectorFetcher {
                 "(${if (boundClient != null) "red celular" else "red default"})")
         val query = "[out:json][timeout:10];" +
             "(way[\"highway\"~\"^(motorway|trunk|primary|secondary|tertiary|residential|service)$\"]" +
-            "(around:700,${String.format(Locale.US, "%.5f", lat)}," +
+            "(around:500,${String.format(Locale.US, "%.5f", lat)}," +
             "${String.format(Locale.US, "%.5f", lon)}););" +
             "out geom qt;"
         val url = "https://overpass-api.de/api/interpreter?data=${URLEncoder.encode(query, "UTF-8")}"

@@ -83,9 +83,9 @@ static void render_vec_frame(const vec_frame_t &f) {
   for (uint8_t i = 0; i < f.n_roads; i++) {
     const vec_road_t &r = f.roads[i];
     switch (r.w) {
-      case 3:  road_dsc.color = COLOR_ROAD_3; road_dsc.width = 6; break;
-      case 2:  road_dsc.color = COLOR_ROAD_2; road_dsc.width = 4; break;
-      default: road_dsc.color = COLOR_ROAD_1; road_dsc.width = 2; break;
+      case 3:  road_dsc.color = COLOR_ROAD_3; road_dsc.width = 8; break;
+      case 2:  road_dsc.color = COLOR_ROAD_2; road_dsc.width = 5; break;
+      default: road_dsc.color = COLOR_ROAD_1; road_dsc.width = 3; break;
     }
     for (uint8_t j = 0; j + 1 < r.n; j++) {
       road_dsc.p1.x = r.pts[j].x;
@@ -101,7 +101,7 @@ static void render_vec_frame(const vec_frame_t &f) {
     lv_draw_line_dsc_t rte_dsc;
     lv_draw_line_dsc_init(&rte_dsc);
     rte_dsc.color       = COLOR_ROUTE;
-    rte_dsc.width       = 3;
+    rte_dsc.width       = 5;
     rte_dsc.opa         = LV_OPA_COVER;
     rte_dsc.round_start = 1;
     rte_dsc.round_end   = 1;

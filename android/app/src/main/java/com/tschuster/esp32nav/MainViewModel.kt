@@ -34,7 +34,7 @@ data class UiState(
         val scanResults: List<String> = emptyList(),
         val lastSsid: String? = null,
         val location: Location? = null,
-        val zoom: Int = 16,
+        val zoom: Int = 17,
         val route: NavRoute? = null,
         val currentStepIndex: Int = 0,
         val navDestination: String = "",
