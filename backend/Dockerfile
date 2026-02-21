@@ -5,6 +5,9 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
+# DEBUG: mostrar contenido de /app y /app/dist para diagnóstico en Coolify
+RUN echo "DEBUG: listing /app" && ls -la /app || true
+RUN echo "DEBUG: listing /app/dist" && ls -la /app/dist || true
 
 FROM node:20-alpine
 WORKDIR /app
