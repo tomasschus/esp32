@@ -10,4 +10,4 @@ RUN npm run build && npm prune --production
 
 ENV NODE_ENV=production
 EXPOSE 4500
-CMD ["node", "dist/main.js"]
+ENTRYPOINT ["node", "dist/main.js"]

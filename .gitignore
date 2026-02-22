@@ -18,6 +18,14 @@ android/.cxx/
 .DS_Store
 **/.DS_Store
 
+# ── Backend (NestJS) ──────────────────────────────────────────
+backend/node_modules/
+backend/dist/
+backend/build/
+backend/coverage/
+backend/.env
+backend/.env*.local
+
 # ── IDEs ──────────────────────────────────────────────────────
 .vscode/
 *.swp
