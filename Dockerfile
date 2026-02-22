@@ -1,13 +1,13 @@
-FROM node:20-alpine
+FROM oven/bun:latest
 
 WORKDIR /app
 
-COPY backend/package*.json ./
-RUN npm install
+COPY backend/package.json backend/bun.lock ./
+RUN bun install --frozen-lockfile
 
 COPY backend/. .
-RUN npm run build && npm prune --production
+RUN bun run build
 
 ENV NODE_ENV=production
 EXPOSE 4500
-ENTRYPOINT ["node", "dist/main.js"]
+ENTRYPOINT ["bun", "dist/main.js"]
