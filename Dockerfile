@@ -9,4 +9,4 @@ COPY backend/. .
 RUN npm run build
 
 EXPOSE 4500
-CMD ["node", "dist/server.js"]
+ENTRYPOINT ["node", "dist/server.js"]
