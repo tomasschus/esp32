@@ -1,8 +1,10 @@
 package com.tschuster.esp32nav
 
 import android.app.Application
+import android.content.Intent
 import android.location.Location
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tschuster.esp32nav.location.LocationTracker
@@ -177,6 +179,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     esp32Client.connect(network)
                     startMapLoop()
                     startWsRetryLoop(network)
+                    startNavService()
                 }
                 .launchIn(viewModelScope)
 
@@ -199,10 +202,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         _ui.value = _ui.value.copy(isConnected = false, status = "Desconectado")
                         mapJob?.cancel()
                         wsRetryJob?.cancel()
+                        stopNavService()
                         startAutoReconnect()
                     }
                 }
                 .launchIn(viewModelScope)
+    }
+
+    private fun startNavService() {
+        ContextCompat.startForegroundService(
+            getApplication(),
+            Intent(getApplication(), NavigationService::class.java)
+        )
+    }
+
+    private fun stopNavService() {
+        getApplication<Application>().stopService(
+            Intent(getApplication(), NavigationService::class.java)
+        )
     }
 
     // ── Location ──────────────────────────────────────────────────────

@@ -55,51 +55,14 @@ void screen_tools_create() {
   lv_obj_align(content, LV_ALIGN_BOTTOM_MID, 0, 0);
   lv_obj_set_style_bg_opa(content, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(content, 0, 0);
-  lv_obj_set_style_pad_all(content, 16, 0);
-  /* keep scrollable so a 3rd card fits */
-
-  /* ── Tarjeta: Mapas (primera) ─────────────────────────────── */
-  lv_obj_t *card = lv_obj_create(content);
-  lv_obj_set_size(card, 448, 72);
-  lv_obj_align(card, LV_ALIGN_TOP_MID, 0, 0);
-  lv_obj_set_style_bg_color(card, lv_color_hex(0x0F2040), 0);
-  lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_color(card, lv_color_hex(0x1A3A6A), 0);
-  lv_obj_set_style_border_width(card, 1, 0);
-  lv_obj_set_style_radius(card, 10, 0);
-  lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(
-      card, [](lv_event_t *) { ui_navigate_to(UI_SCREEN_MAPS); },
-      LV_EVENT_CLICKED, nullptr);
-
-  lv_obj_t *ico = lv_label_create(card);
-  lv_label_set_text(ico, LV_SYMBOL_GPS);
-  lv_obj_set_style_text_font(ico, &lv_font_montserrat_16, 0);
-  lv_obj_set_style_text_color(ico, lv_color_hex(0x4DA6FF), 0);
-  lv_obj_align(ico, LV_ALIGN_LEFT_MID, 14, 0);
-
-  lv_obj_t *lbl_name = lv_label_create(card);
-  lv_label_set_text(lbl_name, "Mapas");
-  lv_obj_set_style_text_font(lbl_name, &lv_font_montserrat_16, 0);
-  lv_obj_set_style_text_color(lbl_name, lv_color_hex(0xEEEEEE), 0);
-  lv_obj_align(lbl_name, LV_ALIGN_LEFT_MID, 58, -10);
-
-  lv_obj_t *lbl_desc = lv_label_create(card);
-  lv_label_set_text(lbl_desc, "AP ESP32-NAV + tile desde app Android");
-  lv_obj_set_style_text_font(lbl_desc, &lv_font_montserrat_14, 0);
-  lv_obj_set_style_text_color(lbl_desc, lv_color_hex(0x778899), 0);
-  lv_obj_align(lbl_desc, LV_ALIGN_LEFT_MID, 58, 12);
-
-  lv_obj_t *arr = lv_label_create(card);
-  lv_label_set_text(arr, LV_SYMBOL_RIGHT);
-  lv_obj_set_style_text_color(arr, lv_color_hex(0x4DA6FF), 0);
-  lv_obj_align(arr, LV_ALIGN_RIGHT_MID, -12, 0);
+  lv_obj_set_style_pad_hor(content, 16, 0);
+  lv_obj_set_style_pad_ver(content, 8, 0);
+  lv_obj_set_style_pad_row(content, 10, 0);
+  lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
 
   /* ── Tarjeta: WiFi Analyzer ───────────────────────────────── */
   lv_obj_t *card2 = lv_obj_create(content);
   lv_obj_set_size(card2, 448, 72);
-  lv_obj_align(card2, LV_ALIGN_TOP_MID, 0, 84);
   lv_obj_set_style_bg_color(card2, lv_color_hex(0x0F2040), 0);
   lv_obj_set_style_bg_opa(card2, LV_OPA_COVER, 0);
   lv_obj_set_style_border_color(card2, lv_color_hex(0x1A3A6A), 0);
@@ -137,7 +100,6 @@ void screen_tools_create() {
   /* ── Tarjeta: Cronómetro / Temporizador ───────────────── */
   lv_obj_t *card3 = lv_obj_create(content);
   lv_obj_set_size(card3, 448, 72);
-  lv_obj_align(card3, LV_ALIGN_TOP_MID, 0, 168);
   lv_obj_set_style_bg_color(card3, lv_color_hex(0x0F2040), 0);
   lv_obj_set_style_bg_opa(card3, LV_OPA_COVER, 0);
   lv_obj_set_style_border_color(card3, lv_color_hex(0x1A3A6A), 0);
@@ -175,7 +137,6 @@ void screen_tools_create() {
   /* ── Tarjeta: Reproductor de Música ───────────────────── */
   lv_obj_t *card4 = lv_obj_create(content);
   lv_obj_set_size(card4, 448, 72);
-  lv_obj_align(card4, LV_ALIGN_TOP_MID, 0, 252);
   lv_obj_set_style_bg_color(card4, lv_color_hex(0x2A1A0E), 0);
   lv_obj_set_style_bg_opa(card4, LV_OPA_COVER, 0);
   lv_obj_set_style_border_color(card4, lv_color_hex(0x4A2A1A), 0);

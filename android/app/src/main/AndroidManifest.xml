@@ -16,8 +16,13 @@
     <!-- GPS -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <!-- GPS en background (opcional, para nav con pantalla apagada) -->
+    <!-- GPS en background (para nav con pantalla apagada) -->
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!-- Foreground service (mantiene proceso vivo con pantalla apagada) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:name=".ESP32NavApp"
@@ -26,6 +31,11 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:allowBackup="false"
         android:supportsRtl="true">
+
+        <service
+            android:name=".NavigationService"
+            android:foregroundServiceType="location"
+            android:exported="false" />
 
         <activity
             android:name=".MainActivity"
