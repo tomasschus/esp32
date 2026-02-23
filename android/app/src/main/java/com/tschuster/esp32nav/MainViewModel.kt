@@ -279,16 +279,47 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         }?.let { VectorRenderer.simplify(it, 1.5) } ?: emptyList()
 
                         // Posición = centrada horizontalmente, 3/4 hacia abajo
-                        val heading = if (loc.hasBearing()) loc.bearing.toInt() else -1
+                        val bearing = if (loc.hasBearing()) loc.bearing else -1f
+                        val heading = bearing.toInt()
+
+                        // Heading-up: rotar calles y ruta alrededor del marcador
+                        val cx = VectorRenderer.SCREEN_W / 2
+                        val cy = VectorRenderer.POS_Y
+                        val rotatedRoads = if (bearing >= 0f) roads.map { seg ->
+                            VectorRenderer.RoadSegment(
+                                VectorRenderer.rotatePoints(seg.pixels, bearing, cx, cy),
+                                seg.width,
+                                seg.name
+                            )
+                        } else roads
+                        val rotatedRoute = if (bearing >= 0f)
+                            VectorRenderer.rotatePoints(routePx, bearing, cx, cy)
+                        else routePx
+
+                        // Nombres de calles: uno por nombre único, prioridad a calles mayores
+                        val labels = buildList<VectorRenderer.StreetLabel> {
+                            val seen = mutableSetOf<String>()
+                            rotatedRoads
+                                .filter { it.name.isNotBlank() }
+                                .sortedByDescending { it.width }
+                                .forEach { seg ->
+                                    if (seg.name !in seen && size < 20) {
+                                        val mid = seg.pixels.getOrNull(seg.pixels.size / 2) ?: return@forEach
+                                        if (mid.first in -10..330 && mid.second in -10..490) {
+                                            seen.add(seg.name)
+                                            add(VectorRenderer.StreetLabel(mid.first, mid.second, seg.name))
+                                        }
+                                    }
+                                }
+                        }
 
                         val json = VectorRenderer.buildFrame(
-                            roads, routePx,
-                            VectorRenderer.SCREEN_W / 2,
-                            VectorRenderer.POS_Y,
+                            rotatedRoads, rotatedRoute, labels,
+                            cx, cy,
                             heading
                         )
                         esp32Client.sendVectorFrame(json)
-                        Log.d(TAG, "vec frame: ${json.length} chars, roads=${roads.size}, route=${routePx.size} pts")
+                        Log.d(TAG, "vec frame: ${json.length} chars, roads=${rotatedRoads.size}, route=${rotatedRoute.size} pts")
                     }
                 }
                 delay(1_000L)

@@ -23,7 +23,9 @@ object VectorRenderer {
     /** Posición Y del marcador de usuario en píxeles (3/4 de pantalla hacia abajo). */
     const val POS_Y = SCREEN_H * 3 / 4  // 360
 
-    data class RoadSegment(val pixels: List<Pair<Int, Int>>, val width: Int)
+    data class RoadSegment(val pixels: List<Pair<Int, Int>>, val width: Int, val name: String = "")
+
+    data class StreetLabel(val x: Int, val y: Int, val name: String)
 
     // ── Proyección Web Mercator ───────────────────────────────────────────────
     /**
@@ -89,15 +91,41 @@ object VectorRenderer {
         return sqrt((p.first - nearX).pow(2) + (p.second - nearY).pow(2))
     }
 
+    // ── Rotación heading-up ───────────────────────────────────────────────────
+    /**
+     * Rota [points] alrededor de ([cx], [cy]) por -[bearingDeg] grados.
+     * Con bearing=90 (yendo al este) el mapa rota -90° → el este queda arriba.
+     */
+    fun rotatePoints(
+        points: List<Pair<Int, Int>>,
+        bearingDeg: Float,
+        cx: Int,
+        cy: Int
+    ): List<Pair<Int, Int>> {
+        if (points.isEmpty()) return points
+        val rad = -bearingDeg * PI / 180.0
+        val cosA = cos(rad)
+        val sinA = sin(rad)
+        return points.map { (x, y) ->
+            val dx = x - cx
+            val dy = y - cy
+            Pair(
+                (cx + dx * cosA - dy * sinA).roundToInt(),
+                (cy + dx * sinA + dy * cosA).roundToInt()
+            )
+        }
+    }
+
     // ── Constructor de frame JSON ─────────────────────────────────────────────
     fun buildFrame(
         roads: List<RoadSegment>,
         route: List<Pair<Int, Int>>,
+        labels: List<StreetLabel>,
         posX: Int,
         posY: Int,
         heading: Int
     ): String {
-        val sb = StringBuilder(4096)
+        val sb = StringBuilder(6144)
         sb.append("{\"t\":\"vec\",\"roads\":[")
         roads.forEachIndexed { i, road ->
             if (i > 0) sb.append(',')
@@ -112,6 +140,14 @@ object VectorRenderer {
         route.forEachIndexed { i, pt ->
             if (i > 0) sb.append(',')
             sb.append('[').append(pt.first).append(',').append(pt.second).append(']')
+        }
+        sb.append("],\"labels\":[")
+        labels.forEachIndexed { i, lbl ->
+            if (i > 0) sb.append(',')
+            // Truncar a 20 chars y escapar comillas por si acaso
+            val safe = lbl.name.take(20).replace("\"", "'")
+            sb.append("{\"p\":[").append(lbl.x).append(',').append(lbl.y)
+            sb.append("],\"n\":\"").append(safe).append("\"}")
         }
         sb.append("],\"pos\":[").append(posX).append(',').append(posY)
         sb.append("],\"hdg\":").append(heading).append('}')

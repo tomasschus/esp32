@@ -114,6 +114,28 @@ static void render_vec_frame(const vec_frame_t &f) {
     }
   }
 
+  /* Nombres de calles */
+  if (f.n_labels > 0) {
+    lv_draw_label_dsc_t lbl_dsc;
+    lv_draw_label_dsc_init(&lbl_dsc);
+    lbl_dsc.font  = &lv_font_montserrat_12;
+    lbl_dsc.opa   = LV_OPA_COVER;
+    lbl_dsc.align = LV_TEXT_ALIGN_CENTER;
+    for (uint8_t i = 0; i < f.n_labels; i++) {
+      int32_t lx = f.labels[i].x;
+      int32_t ly = f.labels[i].y;
+      lv_area_t area = { lx - 55, ly - 8, lx + 55, ly + 8 };
+      /* Sombra oscura desplazada 1 px para legibilidad */
+      lv_area_t shadow = { area.x1 + 1, area.y1 + 1, area.x2 + 1, area.y2 + 1 };
+      lbl_dsc.color = lv_color_hex(0x000000);
+      lbl_dsc.text  = f.labels[i].name;
+      lv_draw_label(&layer, &lbl_dsc, &shadow);
+      /* Texto blanco */
+      lbl_dsc.color = lv_color_white();
+      lv_draw_label(&layer, &lbl_dsc, &area);
+    }
+  }
+
   /* Marcador de posición: círculo blanco (radio 8) + punto azul (radio 5) */
   lv_draw_arc_dsc_t arc;
   lv_draw_arc_dsc_init(&arc);

@@ -25,7 +25,7 @@ private const val TAG = "ESP32Nav/VectorFetcher"
  */
 class VectorFetcher {
 
-    private data class RawRoadSegment(val latLons: List<Pair<Double, Double>>, val width: Int)
+    private data class RawRoadSegment(val latLons: List<Pair<Double, Double>>, val width: Int, val name: String = "")
 
     private val defaultClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -107,7 +107,7 @@ class VectorFetcher {
             if (!onScreen) return@mapNotNull null
             val simplified = VectorRenderer.simplify(pixels, 1.5)
             if (simplified.size < 2) null
-            else VectorRenderer.RoadSegment(simplified, raw.width)
+            else VectorRenderer.RoadSegment(simplified, raw.width, raw.name)
         }
     }
 
@@ -120,14 +120,16 @@ class VectorFetcher {
                 val el = elements.getJSONObject(i)
                 if (el.getString("type") != "way") continue
                 val geom = el.optJSONArray("geometry") ?: continue
-                val highway = el.optJSONObject("tags")?.optString("highway", "") ?: continue
+                val tags = el.optJSONObject("tags")
+                val highway = tags?.optString("highway", "") ?: continue
                 val width = highwayWidth(highway)
+                val name = tags.optString("name", "")
                 val latLons = mutableListOf<Pair<Double, Double>>()
                 for (j in 0 until geom.length()) {
                     val node = geom.getJSONObject(j)
                     latLons.add(node.getDouble("lat") to node.getDouble("lon"))
                 }
-                if (latLons.size >= 2) result.add(RawRoadSegment(latLons, width))
+                if (latLons.size >= 2) result.add(RawRoadSegment(latLons, width, name))
             }
         } catch (e: Exception) {
             Log.e(TAG, "parseOverpass error: ${e.message}")

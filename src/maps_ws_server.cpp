@@ -80,6 +80,18 @@ static void parse_vec_frame(const char *json, size_t len) {
     frame.n_route++;
   }
 
+  /* Nombres de calles */
+  for (JsonObject lbl : doc["labels"].as<JsonArray>()) {
+    if (frame.n_labels >= VEC_MAX_LABELS) break;
+    JsonArray p = lbl["p"];
+    if (p.size() < 2) continue;
+    vec_label_t &l = frame.labels[frame.n_labels];
+    l.x = p[0].as<int>();
+    l.y = p[1].as<int>();
+    strlcpy(l.name, lbl["n"] | "", sizeof(l.name));
+    frame.n_labels++;
+  }
+
   /* Posición */
   JsonArray pos = doc["pos"];
   if (pos.size() >= 2) {
@@ -88,8 +100,8 @@ static void parse_vec_frame(const char *json, size_t len) {
   }
   frame.heading = doc["hdg"] | -1;
 
-  Serial.printf("[Maps] vec: roads=%u route=%u pos=(%d,%d)\n",
-                frame.n_roads, frame.n_route, frame.pos_x, frame.pos_y);
+  Serial.printf("[Maps] vec: roads=%u route=%u labels=%u pos=(%d,%d)\n",
+                frame.n_roads, frame.n_route, frame.n_labels, frame.pos_x, frame.pos_y);
   s_on_vec(frame);
 }
 

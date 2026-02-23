@@ -30,11 +30,21 @@ struct vec_road_t {
     uint8_t w;   /* grosor: 1=menor, 2=secundaria, 3=autopista */
 };
 
+#define VEC_MAX_LABELS   20
+#define VEC_LABEL_LEN    20   /* máx. chars del nombre (sin null) */
+
+struct vec_label_t {
+    int16_t x, y;
+    char    name[VEC_LABEL_LEN + 1];
+};
+
 struct vec_frame_t {
     vec_road_t  roads[VEC_MAX_ROAD_SEGS];
     uint8_t     n_roads;
     vec_point_t route[VEC_MAX_ROUTE_PTS];
     uint16_t    n_route;
+    vec_label_t labels[VEC_MAX_LABELS];
+    uint8_t     n_labels;
     int16_t     pos_x, pos_y;
     int16_t     heading;   /* -1 si no disponible */
 };
