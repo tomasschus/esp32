@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.drawable.BitmapDrawable
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -17,6 +19,7 @@ import org.osmdroid.events.ZoomEvent
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
@@ -36,6 +39,7 @@ class MapController(context: Context) {
     val mapView: MapView
     private val locationOverlay: MyLocationNewOverlay
     private var routeOverlay: Polyline? = null
+    private var destMarker: Marker? = null
     private var following = true
     private var navMode = false
 
@@ -151,18 +155,28 @@ class MapController(context: Context) {
         mapView.setMapOrientation(-bearing)
     }
 
-    /** Dibuja (o borra) la ruta como polilínea azul sobre el mapa Android. */
+    /** Dibuja (o borra) la ruta como polilínea azul + ícono de destino sobre el mapa Android. */
     fun setRoute(points: List<Pair<Double, Double>>) {
         routeOverlay?.let { mapView.overlays.remove(it) }
         routeOverlay = null
+        destMarker?.let { mapView.overlays.remove(it) }
+        destMarker = null
         if (points.isNotEmpty()) {
             routeOverlay = Polyline().apply {
                 setPoints(points.map { (lat, lon) -> GeoPoint(lat, lon) })
                 outlinePaint.color = Color.rgb(0x44, 0x88, 0xFF)
                 outlinePaint.strokeWidth = 8f
             }
-            // Insertar detrás del overlay de ubicación para que el punto quede encima
+            // Ruta detrás, ícono de destino encima de la ruta pero debajo del marcador de usuario
             mapView.overlays.add(0, routeOverlay)
+            val dest = points.last()
+            destMarker = Marker(mapView).apply {
+                position = GeoPoint(dest.first, dest.second)
+                icon = makeDestIcon()
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                setInfoWindow(null) // sin popup al tocar
+            }
+            mapView.overlays.add(1, destMarker!!)
         }
         mapView.invalidate()
     }
@@ -247,5 +261,50 @@ class MapController(context: Context) {
         c.drawCircle(cx, cy, cx * 0.45f, paint)
 
         return bmp
+    }
+
+    /**
+     * Ícono de destino: pin rojo con borde blanco y punta hacia abajo.
+     * El anchor del Marker se coloca en el centro-bottom del bitmap (la punta del pin).
+     */
+    private fun makeDestIcon(): BitmapDrawable {
+        val ctx = mapView.context
+        val density = ctx.resources.displayMetrics.density
+        val r = (13 * density).toInt().coerceAtLeast(13)  // radio del círculo
+        val tailH = (11 * density).toInt().coerceAtLeast(11) // altura de la punta
+        val w = r * 2
+        val h = r * 2 + tailH
+
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val cx = w / 2f
+        val cy = r.toFloat()
+
+        // Sombra suave
+        paint.color = Color.argb(70, 0, 0, 0)
+        canvas.drawCircle(cx + 1.5f, cy + 1.5f, r.toFloat(), paint)
+
+        // Círculo rojo
+        paint.color = Color.rgb(0xFF, 0x44, 0x44)
+        canvas.drawCircle(cx, cy, r.toFloat(), paint)
+
+        // Anillo blanco
+        paint.color = Color.WHITE
+        canvas.drawCircle(cx, cy, r * 0.62f, paint)
+
+        // Centro rojo interno
+        paint.color = Color.rgb(0xFF, 0x44, 0x44)
+        canvas.drawCircle(cx, cy, r * 0.38f, paint)
+
+        // Punta triangular hacia abajo
+        val path = Path()
+        path.moveTo(cx - r * 0.45f, cy + r * 0.72f)
+        path.lineTo(cx + r * 0.45f, cy + r * 0.72f)
+        path.lineTo(cx, h.toFloat())
+        path.close()
+        canvas.drawPath(path, paint)
+
+        return BitmapDrawable(ctx.resources, bmp)
     }
 }

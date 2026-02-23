@@ -138,7 +138,8 @@ class Esp32Client {
     fun disconnect() {
         ws?.close(1000, "disconnect")
         ws = null
-        httpClient?.dispatcher?.executorService?.shutdown()
+        // No llamar shutdown() en el executor: reconstruirlo en cada reconexión es costoso.
+        // El cliente es GC'd naturalmente al nullear la referencia.
         httpClient = null
         _state.value = State.DISCONNECTED
     }

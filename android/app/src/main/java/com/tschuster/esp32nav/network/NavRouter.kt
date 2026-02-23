@@ -12,6 +12,12 @@ import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
+data class GeocodeSuggestion(
+    val label: String,
+    val lat: Double,
+    val lon: Double,
+)
+
 data class NavStep(
     val instruction: String,
     val distanceM: Int,
@@ -50,24 +56,34 @@ class NavRouter {
 
     private val client get() = boundClient ?: defaultClient
 
-    // ── Geocodificar dirección → (lat, lon) ──────────────────────
-    suspend fun geocode(query: String): Pair<Double, Double>? = withContext(Dispatchers.IO) {
-        if (boundClient == null) return@withContext null
+    // ── Buscar sugerencias → lista de hits ───────────────────────
+    suspend fun suggest(
+        query: String,
+        userLat: Double? = null,
+        userLon: Double? = null,
+    ): List<GeocodeSuggestion> = withContext(Dispatchers.IO) {
+        if (boundClient == null) return@withContext emptyList()
         val encoded = URLEncoder.encode(query, "UTF-8")
+        val latLon = if (userLat != null && userLon != null) "&lat=$userLat&lon=$userLon" else ""
         val request = Request.Builder()
-            .url("$BASE_URL/geocode?q=$encoded")
+            .url("$BASE_URL/geocode?q=$encoded$latLon")
             .header("User-Agent", "ESP32Nav/1.0")
             .build()
         try {
             client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext null
-                val root = JSONObject(resp.body?.string() ?: return@withContext null)
-                val hits = root.getJSONArray("hits")
-                if (hits.length() == 0) return@withContext null
-                val hit = hits.getJSONObject(0)
-                hit.getDouble("lat") to hit.getDouble("lon")
+                if (!resp.isSuccessful) return@withContext emptyList()
+                val hits = JSONObject(resp.body?.string() ?: return@withContext emptyList())
+                    .getJSONArray("hits")
+                (0 until hits.length()).map { i ->
+                    val h = hits.getJSONObject(i)
+                    GeocodeSuggestion(
+                        label = h.getString("label"),
+                        lat   = h.getDouble("lat"),
+                        lon   = h.getDouble("lon"),
+                    )
+                }
             }
-        } catch (e: Exception) { null }
+        } catch (e: Exception) { emptyList() }
     }
 
     // ── Calcular ruta → NavRoute ─────────────────────────────────
@@ -93,7 +109,10 @@ class NavRouter {
                 val durS  = (root.getLong("time") / 1000).toInt()
                 val multiplier = root.optDouble("points_encoded_multiplier", 1e6)
 
-                val geometry = decodePolyline(root.getString("points"), multiplier)
+                // El backend indica explícitamente si el polyline incluye elevación (3D).
+                // Default true: compatibilidad con backend deployado antes de agregar este campo.
+                val withElevation = root.optBoolean("elevation", true)
+                val geometry = decodePolyline(root.getString("points"), multiplier, withElevation)
 
                 val instructionsArr = root.getJSONArray("instructions")
                 val steps = mutableListOf<NavStep>()
@@ -115,7 +134,9 @@ class NavRouter {
     }
 
     // ── Decodificar polyline (GraphHopper usa multiplier=1e6) ────
-    private fun decodePolyline(encoded: String, multiplier: Double): List<Pair<Double, Double>> {
+    // withElevation=true cuando GraphHopper devuelve puntos 3D (lat,lon,ele):
+    // en ese caso hay que leer y descartar el tercer valor para no corromper los siguientes.
+    private fun decodePolyline(encoded: String, multiplier: Double, withElevation: Boolean = false): List<Pair<Double, Double>> {
         val result = mutableListOf<Pair<Double, Double>>()
         var index = 0
         var lat = 0
@@ -139,6 +160,18 @@ class NavRouter {
                 shift += 5
             } while (b >= 0x20)
             lon += if (chunk and 1 != 0) (chunk shr 1).inv() else chunk shr 1
+
+            // Saltear elevación si está presente (3D polyline)
+            if (withElevation) {
+                shift = 0
+                chunk = 0
+                do {
+                    b = encoded[index++].code - 63
+                    chunk = chunk or ((b and 0x1f) shl shift)
+                    shift += 5
+                } while (b >= 0x20)
+                // valor de elevación descartado
+            }
 
             result.add(lat / multiplier to lon / multiplier)
         }

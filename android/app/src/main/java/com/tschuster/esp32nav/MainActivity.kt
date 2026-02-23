@@ -50,6 +50,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -62,6 +63,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import com.tschuster.esp32nav.map.MapController
 import com.tschuster.esp32nav.network.ESP32_PASSWORD
+import com.tschuster.esp32nav.network.GeocodeSuggestion
 import com.tschuster.esp32nav.ui.theme.ESP32NavTheme
 
 private const val TAG = "ESP32Nav/Main"
@@ -123,16 +125,18 @@ class MainActivity : ComponentActivity() {
             ESP32NavTheme {
                 val state by vm.ui.collectAsState()
                 MainScreen(
-                    state            = state,
-                    mapController    = mapController,
-                    onScan           = { requestPerms(Action.SCAN) },
-                    onConnect        = { ssid, pw -> requestPerms(Action.CONNECT, ssid, pw) },
-                    onSearch         = vm::searchRoute,
-                    onClear          = vm::clearRoute,
-                    onZoomIn         = { vm.setZoom(state.zoom + 1) },
-                    onZoomOut        = { vm.setZoom(state.zoom - 1) },
-                    onCenterLocation = vm::centerOnLocation,
-                    onDismissError   = vm::dismissError,
+                    state                = state,
+                    mapController        = mapController,
+                    onScan               = { requestPerms(Action.SCAN) },
+                    onConnect            = { ssid, pw -> requestPerms(Action.CONNECT, ssid, pw) },
+                    onSearch             = vm::searchSuggestions,
+                    onSelectSuggestion   = vm::routeToSuggestion,
+                    onClearSuggestions   = vm::clearSuggestions,
+                    onClear              = vm::clearRoute,
+                    onZoomIn             = { vm.setZoom(state.zoom + 1) },
+                    onZoomOut            = { vm.setZoom(state.zoom - 1) },
+                    onCenterLocation     = vm::centerOnLocation,
+                    onDismissError       = vm::dismissError,
                 )
             }
         }
@@ -153,6 +157,8 @@ fun MainScreen(
     onScan: () -> Unit,
     onConnect: (String, String) -> Unit,
     onSearch: (String) -> Unit,
+    onSelectSuggestion: (GeocodeSuggestion) -> Unit,
+    onClearSuggestions: () -> Unit,
     onClear: () -> Unit,
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
@@ -174,7 +180,7 @@ fun MainScreen(
                 .safeDrawingPadding(),
         ) {
 
-            // ── CAPA 1: Controles superiores (header + buscador) ─────────
+            // ── CAPA 1: Card superior unificada + card de paso nav ────────
             Column(
                 modifier = Modifier
                     .align(Alignment.TopStart)
@@ -182,62 +188,128 @@ fun MainScreen(
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // Header
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0xEE1A1A2E), RoundedCornerShape(12.dp))
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                // ── Card principal ────────────────────────────────────────
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors   = CardDefaults.cardColors(containerColor = Color(0xEE1A1A2E)),
+                    shape    = RoundedCornerShape(12.dp),
                 ) {
-                    Text(
-                        text       = "ESP32 NAV",
-                        fontSize   = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color      = MaterialTheme.colorScheme.primary,
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        text     = state.status,
-                        fontSize = 12.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        color    = Color(0xCCEEEEEE),
-                        modifier = Modifier.weight(1f),
-                    )
-                    if (state.isConnected) {
-                        Text(
-                            text  = "Z${state.zoom}",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.secondary,
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+
+                        // 1. Título + estado
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text       = "ESP32 NAV",
+                                fontSize   = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color      = MaterialTheme.colorScheme.primary,
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                text     = state.status,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color    = Color(0xCCEEEEEE),
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (state.isConnected) {
+                                Text(
+                                    text     = "Z${state.zoom}",
+                                    fontSize = 12.sp,
+                                    color    = MaterialTheme.colorScheme.secondary,
+                                )
+                            }
+                        }
+
+                        // 2. Búsqueda (cuando hay GPS)
+                        if (state.location != null || state.route != null) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(vertical = 10.dp),
+                                color    = Color(0x22FFFFFF),
+                            )
+                            NavSearchBar(
+                                route              = state.route,
+                                destination        = state.navDestination,
+                                isSearching        = state.isSearchingRoute || state.isSearchingSuggestions,
+                                suggestions        = state.suggestions,
+                                onSearch           = onSearch,
+                                onSelectSuggestion = onSelectSuggestion,
+                                onClearSuggestions = onClearSuggestions,
+                                onClear            = onClear,
+                            )
+                        }
+
+                        // 3. Dispositivos
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 10.dp),
+                            color    = Color(0x22FFFFFF),
                         )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text       = "Dispositivos",
+                                fontSize   = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color      = Color(0xFFEEEEEE),
+                                modifier   = Modifier.weight(1f),
+                            )
+                            IconButton(
+                                onClick  = onScan,
+                                enabled  = !state.isScanning && !state.isConnecting,
+                            ) {
+                                if (state.isScanning) {
+                                    CircularProgressIndicator(
+                                        modifier    = Modifier.size(20.dp),
+                                        color       = MaterialTheme.colorScheme.secondary,
+                                        strokeWidth = 2.dp,
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Default.Refresh,
+                                        contentDescription = "Buscar dispositivos",
+                                        tint = MaterialTheme.colorScheme.secondary,
+                                    )
+                                }
+                            }
+                        }
+
+                        if (state.isConnecting) {
+                            Text(
+                                text     = "Buscá el diálogo del sistema y tocá \"Conectar\"",
+                                fontSize = 13.sp,
+                                color    = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+
+                        if (state.lastSsid != null) {
+                            Spacer(Modifier.height(4.dp))
+                            DeviceRow(
+                                ssid         = state.lastSsid,
+                                label        = "Último usado",
+                                isConnecting = state.isConnecting,
+                                onConnect    = onConnect,
+                            )
+                        }
+
+                        val fresh = state.scanResults.filter { it != state.lastSsid }
+                        if (fresh.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            fresh.forEach { ssid ->
+                                DeviceRow(ssid = ssid, label = null, isConnecting = state.isConnecting, onConnect = onConnect)
+                                Spacer(Modifier.height(4.dp))
+                            }
+                        } else if (!state.isScanning && state.lastSsid == null) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text     = "Presioná el ícono para buscar dispositivos.",
+                                fontSize = 13.sp,
+                                color    = Color(0x88EEEEEE),
+                            )
+                        }
                     }
                 }
 
-                // Panel de conexión (solo cuando no conectado)
-                if (!state.isConnected) {
-                    ConnectCard(
-                        isScanning   = state.isScanning,
-                        isConnecting = state.isConnecting,
-                        scanResults  = state.scanResults,
-                        lastSsid     = state.lastSsid,
-                        onScan       = onScan,
-                        onConnect    = onConnect,
-                    )
-                }
-
-                // Buscador de destino (siempre visible si hay GPS, con o sin ESP32)
-                if (state.location != null || state.route != null) {
-                    NavSearchBar(
-                        route       = state.route,
-                        destination = state.navDestination,
-                        isSearching = state.isSearchingRoute,
-                        onSearch    = onSearch,
-                        onClear     = onClear,
-                    )
-                }
-
-                // Paso de navegación activo
+                // ── Card de paso de navegación (separada) ─────────────────
                 state.route?.let { route ->
                     if (state.currentStepIndex < route.steps.size) {
                         val step = route.steps[state.currentStepIndex]
@@ -305,80 +377,6 @@ fun MainScreen(
     }
 }
 
-// ── ConnectCard ───────────────────────────────────────────────────────────────
-
-@Composable
-fun ConnectCard(
-    isScanning: Boolean,
-    isConnecting: Boolean,
-    scanResults: List<String>,
-    lastSsid: String?,
-    onScan: () -> Unit,
-    onConnect: (String, String) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors   = CardDefaults.cardColors(containerColor = Color(0xEE1A1A2E)),
-        shape    = RoundedCornerShape(12.dp),
-    ) {
-        Column(modifier = Modifier.padding(20.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text       = "Dispositivos ESP32",
-                    fontSize   = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color      = Color(0xFFEEEEEE),
-                    modifier   = Modifier.weight(1f),
-                )
-                IconButton(onClick = onScan, enabled = !isScanning && !isConnecting) {
-                    if (isScanning) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp),
-                            color = MaterialTheme.colorScheme.secondary, strokeWidth = 2.dp)
-                    } else {
-                        Icon(Icons.Default.Refresh, contentDescription = "Buscar",
-                            tint = MaterialTheme.colorScheme.secondary)
-                    }
-                }
-            }
-
-            if (isConnecting) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text     = "Buscá el diálogo del sistema y tocá \"Conectar\"",
-                    fontSize = 13.sp,
-                    color    = MaterialTheme.colorScheme.primary,
-                )
-            }
-
-            if (lastSsid != null) {
-                Spacer(Modifier.height(8.dp))
-                DeviceRow(ssid = lastSsid, label = "Último usado",
-                    isConnecting = isConnecting, onConnect = onConnect)
-            }
-
-            val fresh = scanResults.filter { it != lastSsid }
-            if (fresh.isNotEmpty()) {
-                if (lastSsid != null) {
-                    Spacer(Modifier.height(8.dp))
-                    HorizontalDivider(color = Color(0x44FFFFFF))
-                    Spacer(Modifier.height(8.dp))
-                }
-                fresh.forEach { ssid ->
-                    DeviceRow(ssid = ssid, label = null, isConnecting = isConnecting, onConnect = onConnect)
-                    Spacer(Modifier.height(4.dp))
-                }
-            } else if (!isScanning && lastSsid == null) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    text     = "Presioná el ícono para buscar dispositivos.",
-                    fontSize = 13.sp,
-                    color    = Color(0x88EEEEEE),
-                )
-            }
-        }
-    }
-}
 
 @Composable
 fun DeviceRow(
@@ -417,51 +415,110 @@ fun NavSearchBar(
     route: Any?,
     destination: String,
     isSearching: Boolean,
+    suggestions: List<GeocodeSuggestion>,
     onSearch: (String) -> Unit,
+    onSelectSuggestion: (GeocodeSuggestion) -> Unit,
+    onClearSuggestions: () -> Unit,
     onClear: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var query by remember { mutableStateOf(destination) }
+    // Flag para distinguir cambios del usuario vs. cambios programáticos (evita auto-search al setear destino)
+    var userTyped by remember { mutableStateOf(false) }
 
-    Row(modifier = modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        OutlinedTextField(
-            value         = query,
-            onValueChange = { query = it },
-            modifier      = Modifier.weight(1f),
-            placeholder   = { Text("Buscar destino…", fontSize = 14.sp) },
-            leadingIcon   = { Icon(Icons.Default.LocationOn, contentDescription = null) },
-            trailingIcon  = if (route != null) {
-                { IconButton(onClick = { query = ""; onClear() }) {
-                    Icon(Icons.Default.Clear, contentDescription = "Limpiar ruta")
-                }}
-            } else null,
-            singleLine      = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { if (query.isNotBlank()) onSearch(query) }),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor    = MaterialTheme.colorScheme.primary,
-                unfocusedBorderColor  = Color(0x66FFFFFF),
-                cursorColor           = MaterialTheme.colorScheme.primary,
-                focusedTextColor      = Color(0xFFEEEEEE),
-                unfocusedTextColor    = Color(0xFFEEEEEE),
-                focusedContainerColor = Color(0xDD1A1A2E),
-                unfocusedContainerColor = Color(0xCC1A1A2E),
-            ),
-            shape = RoundedCornerShape(10.dp),
-        )
-        Spacer(Modifier.width(8.dp))
-        IconButton(
-            onClick  = { if (query.isNotBlank()) onSearch(query) },
-            enabled  = !isSearching,
-            modifier = Modifier
-                .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(10.dp))
-                .size(52.dp),
-        ) {
-            if (isSearching) {
-                CircularProgressIndicator(modifier = Modifier.size(20.dp),
-                    color = Color.White, strokeWidth = 2.dp)
-            } else {
-                Icon(Icons.Default.Search, contentDescription = "Buscar", tint = Color.White)
+    // Sync cuando el VM actualiza navDestination (e.g. sugerencia seleccionada o ruta borrada)
+    LaunchedEffect(destination) {
+        if (destination != query) {
+            userTyped = false
+            query = destination
+        }
+    }
+
+    // Debounce: auto-busca 300 ms después de que el usuario deja de tipear
+    LaunchedEffect(query) {
+        if (userTyped && query.length >= 2) {
+            delay(300L)
+            onSearch(query)
+        }
+    }
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value         = query,
+                onValueChange = {
+                    userTyped = true
+                    query = it
+                    if (suggestions.isNotEmpty()) onClearSuggestions()
+                },
+                modifier      = Modifier.weight(1f),
+                placeholder   = { Text("Buscar destino…", fontSize = 14.sp) },
+                leadingIcon   = { Icon(Icons.Default.LocationOn, contentDescription = null) },
+                trailingIcon  = if (route != null) {
+                    { IconButton(onClick = { query = ""; onClear() }) {
+                        Icon(Icons.Default.Clear, contentDescription = "Limpiar ruta")
+                    }}
+                } else null,
+                singleLine      = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { if (query.isNotBlank()) onSearch(query) }),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor      = MaterialTheme.colorScheme.primary,
+                    unfocusedBorderColor    = Color(0x66FFFFFF),
+                    cursorColor             = MaterialTheme.colorScheme.primary,
+                    focusedTextColor        = Color(0xFFEEEEEE),
+                    unfocusedTextColor      = Color(0xFFEEEEEE),
+                    focusedContainerColor   = Color(0xDD1A1A2E),
+                    unfocusedContainerColor = Color(0xCC1A1A2E),
+                ),
+                shape = RoundedCornerShape(10.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            IconButton(
+                onClick  = { if (query.isNotBlank()) onSearch(query) },
+                enabled  = !isSearching,
+                modifier = Modifier
+                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(10.dp))
+                    .size(52.dp),
+            ) {
+                if (isSearching) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp),
+                        color = Color.White, strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Default.Search, contentDescription = "Buscar", tint = Color.White)
+                }
+            }
+        }
+
+        // Dropdown de sugerencias
+        if (suggestions.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Column {
+                suggestions.forEachIndexed { i, suggestion ->
+                    if (i > 0) HorizontalDivider(color = Color(0x22FFFFFF))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectSuggestion(suggestion) }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Default.LocationOn,
+                            contentDescription = null,
+                            tint     = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            text     = suggestion.label,
+                            fontSize = 13.sp,
+                            color    = Color(0xFFEEEEEE),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
         }
     }

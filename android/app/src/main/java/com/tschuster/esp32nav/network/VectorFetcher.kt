@@ -38,6 +38,13 @@ class VectorFetcher {
     @Volatile private var lastQueryLat = Double.NaN
     @Volatile private var lastQueryLon = Double.NaN
 
+    // Cache de reproyección: evita recalcular píxeles en cada frame si el GPS apenas se movió
+    private var lastProjectedRawRef: List<RawRoadSegment>? = null
+    private var lastProjectedResult: List<VectorRenderer.RoadSegment> = emptyList()
+    private var lastProjLat = Double.NaN
+    private var lastProjLon = Double.NaN
+    private var lastProjZoom = -1.0
+
     fun setInternetNetwork(network: Network) {
         boundClient = OkHttpClient.Builder()
             .socketFactory(network.socketFactory)
@@ -91,15 +98,24 @@ class VectorFetcher {
 
     /**
      * Reproyecta el caché a píxeles de pantalla para el [centerLat]/[centerLon] y [zoom] actuales.
-     * Sincrónico, sin red. Llama desde el hilo principal (map loop).
+     * Sincrónico, sin red. Reutiliza el resultado anterior si la fuente no cambió,
+     * el zoom es el mismo y el GPS se movió menos de 5 m.
      */
     fun getCachedRoads(
         zoom: Double,
         centerLat: Double,
         centerLon: Double
     ): List<VectorRenderer.RoadSegment> {
-        return cachedRawRoads.mapNotNull { raw ->
-            val pixels = raw.latLons.map { (lat, lon) ->
+        val raw = cachedRawRoads
+        val posChanged = lastProjLat.isNaN() || zoom != lastProjZoom || run {
+            val d = FloatArray(1)
+            Location.distanceBetween(centerLat, centerLon, lastProjLat, lastProjLon, d)
+            d[0] > 5f
+        }
+        if (raw === lastProjectedRawRef && !posChanged) return lastProjectedResult
+
+        val result = raw.mapNotNull { seg ->
+            val pixels = seg.latLons.map { (lat, lon) ->
                 VectorRenderer.latLonToPixel(lat, lon, centerLat, centerLon, zoom)
             }
             // Descartar segmentos completamente fuera de pantalla (margen de 60 px)
@@ -107,8 +123,15 @@ class VectorFetcher {
             if (!onScreen) return@mapNotNull null
             val simplified = VectorRenderer.simplify(pixels, 1.5)
             if (simplified.size < 2) null
-            else VectorRenderer.RoadSegment(simplified, raw.width, raw.name)
+            else VectorRenderer.RoadSegment(simplified, seg.width, seg.name)
         }
+
+        lastProjectedRawRef = raw
+        lastProjectedResult = result
+        lastProjLat = centerLat
+        lastProjLon = centerLon
+        lastProjZoom = zoom
+        return result
     }
 
     // ── Parser Overpass ───────────────────────────────────────────────────────
