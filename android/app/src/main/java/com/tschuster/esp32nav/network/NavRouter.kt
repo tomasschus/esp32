@@ -3,12 +3,13 @@ package com.tschuster.esp32nav.network
 import android.net.Network
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
-import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 data class NavStep(
@@ -22,17 +23,14 @@ data class NavRoute(
     val steps: List<NavStep>,
     val totalDistanceM: Int,
     val totalDurationSec: Int,
-    val geometry: List<Pair<Double, Double>> = emptyList()  // [lat, lon] pairs
+    val geometry: List<Pair<Double, Double>> = emptyList()
 ) {
     val etaMin: Int get() = totalDurationSec / 60
 }
 
-/**
- * Geocodificación: Nominatim (OSM) — gratis, sin API key.
- * Routing:        OSRM público — gratis, sin API key.
- *
- * Ambas APIs usan internet (red celular, no WiFi del ESP32).
- */
+private const val BASE_URL = "https://maps.tomasschuster.com"
+private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
 class NavRouter {
 
     private val defaultClient = OkHttpClient.Builder()
@@ -42,7 +40,6 @@ class NavRouter {
 
     private var boundClient: OkHttpClient? = null
 
-    /** Vincular a la red de internet (datos móviles) para evitar rutar por el WiFi del ESP32. */
     fun setInternetNetwork(network: Network) {
         boundClient = OkHttpClient.Builder()
             .socketFactory(network.socketFactory)
@@ -57,18 +54,18 @@ class NavRouter {
     suspend fun geocode(query: String): Pair<Double, Double>? = withContext(Dispatchers.IO) {
         if (boundClient == null) return@withContext null
         val encoded = URLEncoder.encode(query, "UTF-8")
-        val url = "https://nominatim.openstreetmap.org/search" +
-                  "?q=$encoded&format=json&limit=1&addressdetails=0"
-        val request = Request.Builder().url(url)
+        val request = Request.Builder()
+            .url("$BASE_URL/geocode?q=$encoded")
             .header("User-Agent", "ESP32Nav/1.0")
             .build()
         try {
             client.newCall(request).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext null
-                val arr = JSONArray(resp.body?.string() ?: return@withContext null)
-                if (arr.length() == 0) return@withContext null
-                val obj = arr.getJSONObject(0)
-                obj.getDouble("lat") to obj.getDouble("lon")
+                val root = JSONObject(resp.body?.string() ?: return@withContext null)
+                val hits = root.getJSONArray("hits")
+                if (hits.length() == 0) return@withContext null
+                val hit = hits.getJSONObject(0)
+                hit.getDouble("lat") to hit.getDouble("lon")
             }
         } catch (e: Exception) { null }
     }
@@ -78,47 +75,38 @@ class NavRouter {
         fromLat: Double, fromLon: Double,
         toLat: Double,   toLon: Double
     ): NavRoute? = withContext(Dispatchers.IO) {
-        val fmt = { v: Double -> String.format(Locale.US, "%.5f", v) }
-        val url = "http://router.project-osrm.org/route/v1/driving/" +
-                  "${fmt(fromLon)},${fmt(fromLat)};${fmt(toLon)},${fmt(toLat)}" +
-                  "?steps=true&overview=full&geometries=geojson"
-        val request = Request.Builder().url(url).build()
+        val bodyJson = JSONObject().apply {
+            put("from", JSONArray().put(fromLon).put(fromLat))
+            put("to",   JSONArray().put(toLon).put(toLat))
+            put("profile", "car")
+        }
+        val request = Request.Builder()
+            .url("$BASE_URL/route")
+            .post(bodyJson.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .build()
         try {
             client.newCall(request).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext null
-                val root  = JSONObject(resp.body?.string() ?: return@withContext null)
-                if (root.getString("code") != "Ok") return@withContext null
-                val route = root.getJSONArray("routes").getJSONObject(0)
-                val leg   = route.getJSONArray("legs").getJSONObject(0)
+                val root = JSONObject(resp.body?.string() ?: return@withContext null)
 
-                val distM = leg.getDouble("distance").toInt()
-                val durS  = leg.getDouble("duration").toInt()
+                val distM = root.getDouble("distance").toInt()
+                val durS  = (root.getLong("time") / 1000).toInt()
+                val multiplier = root.optDouble("points_encoded_multiplier", 1e6)
 
+                val geometry = decodePolyline(root.getString("points"), multiplier)
+
+                val instructionsArr = root.getJSONArray("instructions")
                 val steps = mutableListOf<NavStep>()
-                val stepsArr = leg.getJSONArray("steps")
-                for (i in 0 until stepsArr.length()) {
-                    val step     = stepsArr.getJSONObject(i)
-                    val maneuver = step.getJSONObject("maneuver")
-                    val loc      = maneuver.getJSONArray("location")
-                    val street   = step.optString("name", "")
-                    steps.add(
-                        NavStep(
-                            instruction = buildInstruction(maneuver, street),
-                            distanceM   = step.getDouble("distance").toInt(),
-                            lon         = loc.getDouble(0),
-                            lat         = loc.getDouble(1)
-                        )
-                    )
-                }
-
-                // Parse full route geometry (GeoJSON LineString coordinates: [lon, lat])
-                val geometry = mutableListOf<Pair<Double, Double>>()
-                val geomCoords = route.optJSONObject("geometry")?.optJSONArray("coordinates")
-                if (geomCoords != null) {
-                    for (i in 0 until geomCoords.length()) {
-                        val pt = geomCoords.getJSONArray(i)
-                        geometry.add(pt.getDouble(1) to pt.getDouble(0))  // lat, lon
-                    }
+                for (i in 0 until instructionsArr.length()) {
+                    val instr  = instructionsArr.getJSONObject(i)
+                    val ptIdx  = instr.getJSONArray("interval").getInt(0)
+                    val (lat, lon) = if (ptIdx < geometry.size) geometry[ptIdx] else 0.0 to 0.0
+                    steps.add(NavStep(
+                        instruction = instr.getString("text"),
+                        distanceM   = instr.getDouble("distance").toInt(),
+                        lat         = lat,
+                        lon         = lon
+                    ))
                 }
 
                 NavRoute(steps, distM, durS, geometry)
@@ -126,49 +114,34 @@ class NavRouter {
         } catch (e: Exception) { null }
     }
 
-    // ── Construir instrucción en castellano ──────────────────────
-    private fun buildInstruction(maneuver: JSONObject, street: String): String {
-        val type     = maneuver.optString("type", "")
-        val modifier = maneuver.optString("modifier", "")
-        val via      = if (street.isNotBlank()) " por $street" else ""
+    // ── Decodificar polyline (GraphHopper usa multiplier=1e6) ────
+    private fun decodePolyline(encoded: String, multiplier: Double): List<Pair<Double, Double>> {
+        val result = mutableListOf<Pair<Double, Double>>()
+        var index = 0
+        var lat = 0
+        var lon = 0
+        while (index < encoded.length) {
+            var b: Int
+            var shift = 0
+            var chunk = 0
+            do {
+                b = encoded[index++].code - 63
+                chunk = chunk or ((b and 0x1f) shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            lat += if (chunk and 1 != 0) (chunk shr 1).inv() else chunk shr 1
 
-        return when (type) {
-            "depart"  -> "Salir$via"
-            "arrive"  -> "Llegaste al destino"
-            "turn"    -> when (modifier) {
-                "left"        -> "Girar a la izquierda$via"
-                "right"       -> "Girar a la derecha$via"
-                "sharp left"  -> "Giro brusco a la izquierda$via"
-                "sharp right" -> "Giro brusco a la derecha$via"
-                "slight left" -> "Girar levemente a la izquierda$via"
-                "slight right"-> "Girar levemente a la derecha$via"
-                "uturn"       -> "Dar la vuelta"
-                else          -> "Continuar$via"
-            }
-            "new name"   -> "Continuar$via"
-            "merge"      -> "Incorporarse$via"
-            "on ramp"    -> "Tomar la rampa$via"
-            "off ramp"   -> "Salir por la rampa$via"
-            "fork"       -> "En el cruce, ${dirSpan(modifier)}$via"
-            "end of road"-> "Al final de la calle, ${dirSpan(modifier)}"
-            "roundabout", "rotary" -> {
-                val exit = maneuver.optInt("exit", 0)
-                "Entrar a la rotonda, tomar la ${ordinal(exit)} salida$via"
-            }
-            else -> "Continuar$via"
+            shift = 0
+            chunk = 0
+            do {
+                b = encoded[index++].code - 63
+                chunk = chunk or ((b and 0x1f) shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            lon += if (chunk and 1 != 0) (chunk shr 1).inv() else chunk shr 1
+
+            result.add(lat / multiplier to lon / multiplier)
         }
-    }
-
-    private fun dirSpan(modifier: String) = when (modifier) {
-        "left"  -> "ir a la izquierda"
-        "right" -> "ir a la derecha"
-        "slight left"  -> "ir levemente a la izquierda"
-        "slight right" -> "ir levemente a la derecha"
-        else -> "continuar"
-    }
-
-    private fun ordinal(n: Int) = when (n) {
-        1 -> "primera"; 2 -> "segunda"; 3 -> "tercera"
-        4 -> "cuarta";  5 -> "quinta";  else -> "${n}a"
+        return result
     }
 }

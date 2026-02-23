@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -35,6 +37,10 @@ class MapController(context: Context) {
     private val locationOverlay: MyLocationNewOverlay
     private var routeOverlay: Polyline? = null
     private var following = true
+    private var navMode = false
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var reEnableFollowRunnable: Runnable = Runnable {}
 
     init {
         Configuration.getInstance().apply {
@@ -69,7 +75,16 @@ class MapController(context: Context) {
                 }
         mapView.overlays.add(locationOverlay)
 
-        // Cuando el usuario mueve el mapa manualmente, pausamos el seguimiento automático
+        reEnableFollowRunnable = Runnable {
+            if (navMode) {
+                locationOverlay.enableFollowLocation()
+                following = true
+                Log.d(TAG, "nav mode: seguimiento reactivado automáticamente")
+            }
+        }
+
+        // Cuando el usuario mueve el mapa manualmente, pausamos el seguimiento automático.
+        // En nav mode se programa la reactivación automática a los 5 s.
         mapView.addMapListener(
                 object : MapListener {
                     override fun onScroll(event: ScrollEvent): Boolean {
@@ -77,6 +92,10 @@ class MapController(context: Context) {
                             locationOverlay.disableFollowLocation()
                             following = false
                             Log.d(TAG, "seguimiento pausado (pan manual)")
+                        }
+                        if (navMode) {
+                            mainHandler.removeCallbacks(reEnableFollowRunnable)
+                            mainHandler.postDelayed(reEnableFollowRunnable, 5_000L)
                         }
                         return false
                     }
@@ -102,6 +121,34 @@ class MapController(context: Context) {
 
     fun setZoom(zoom: Int) {
         mapView.controller.setZoom(zoom.toDouble())
+    }
+
+    /**
+     * Activa/desactiva el modo navegación.
+     * Activado: zoom 17, seguimiento forzado, mapa se rota con el heading del usuario.
+     * Desactivado: mapa vuelve a orientación norte-arriba.
+     */
+    fun setNavMode(enabled: Boolean) {
+        navMode = enabled
+        mainHandler.removeCallbacks(reEnableFollowRunnable)
+        if (enabled) {
+            mapView.controller.setZoom(17.0)
+            locationOverlay.enableFollowLocation()
+            following = true
+            Log.d(TAG, "nav mode ON")
+        } else {
+            mapView.setMapOrientation(0f)
+            Log.d(TAG, "nav mode OFF")
+        }
+    }
+
+    /**
+     * Rota el mapa para que el heading del usuario quede hacia arriba.
+     * Solo tiene efecto en nav mode.
+     */
+    fun updateBearing(bearing: Float) {
+        if (!navMode) return
+        mapView.setMapOrientation(-bearing)
     }
 
     /** Dibuja (o borra) la ruta como polilínea azul sobre el mapa Android. */

@@ -65,6 +65,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var setCenterCallback: ((Double, Double) -> Unit)? = null
     private var setZoomCallback: ((Int) -> Unit)? = null
     private var setRouteCallback: ((List<Pair<Double, Double>>) -> Unit)? = null
+    private var setNavModeCallback: ((Boolean) -> Unit)? = null
+    private var updateBearingCallback: ((Float) -> Unit)? = null
     private var initialCenterDone = false
 
     init {
@@ -77,21 +79,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ── Callbacks del mapa ────────────────────────────────────────────
     /**
      * Registrado desde la Activity una vez que el MapView está listo.
-     * [enableFollow] → reactiva el seguimiento automático de ubicación.
-     * [setCenter]    → centra el mapa en una coordenada.
-     * [setZoom]      → cambia el zoom del mapa.
-     * [setRoute]     → dibuja la ruta como polilínea en el mapa Android.
+     * [enableFollow]  → reactiva el seguimiento automático de ubicación.
+     * [setCenter]     → centra el mapa en una coordenada.
+     * [setZoom]       → cambia el zoom del mapa.
+     * [setRoute]      → dibuja la ruta como polilínea en el mapa Android.
+     * [setNavMode]    → activa/desactiva modo navegación (seguimiento + rotación).
+     * [updateBearing] → rota el mapa según el heading del usuario.
      */
     fun registerMapCallbacks(
             enableFollow: () -> Unit,
             setCenter: (Double, Double) -> Unit,
             setZoom: (Int) -> Unit,
             setRoute: (List<Pair<Double, Double>>) -> Unit,
+            setNavMode: (Boolean) -> Unit,
+            updateBearing: (Float) -> Unit,
     ) {
         enableFollowCallback = enableFollow
         setCenterCallback = setCenter
         setZoomCallback = setZoom
         setRouteCallback = setRoute
+        setNavModeCallback = setNavMode
+        updateBearingCallback = updateBearing
         // Si ya tenemos ubicación cuando se registran los callbacks (Activity recreada),
         // centrar inmediatamente sin esperar al próximo tick de GPS.
         if (!initialCenterDone) {
@@ -100,8 +108,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 initialCenterDone = true
             }
         }
-        // Restaurar ruta si ya hay una activa
-        _ui.value.route?.geometry?.let { setRoute(it) }
+        // Restaurar ruta si ya hay una activa (p.ej. tras rotación de pantalla)
+        _ui.value.route?.let { route ->
+            setRoute(route.geometry)
+            setNavMode(true)
+        }
     }
 
     // ── Scan / Connect ────────────────────────────────────────────────
@@ -203,6 +214,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (!initialCenterDone && setCenterCallback != null) {
                         setCenterCallback?.invoke(loc.latitude, loc.longitude)
                         initialCenterDone = true
+                    }
+                    // Nav mode: rotar el mapa con el heading del usuario
+                    if (_ui.value.route != null && loc.hasBearing()) {
+                        updateBearingCallback?.invoke(loc.bearing)
                     }
                 }
                 .launchIn(viewModelScope)
@@ -382,6 +397,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _ui.value =
                     _ui.value.copy(isSearchingRoute = false, route = route, currentStepIndex = 0)
             setRouteCallback?.invoke(route.geometry)
+            setNavModeCallback?.invoke(true)
             sendCurrentStep()
         }
     }
@@ -389,6 +405,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun clearRoute() {
         _ui.value = _ui.value.copy(route = null, currentStepIndex = 0, navDestination = "")
         setRouteCallback?.invoke(emptyList())
+        setNavModeCallback?.invoke(false)
         esp32Client.sendNavStep("Sin navegación", 0, 0)
     }
 

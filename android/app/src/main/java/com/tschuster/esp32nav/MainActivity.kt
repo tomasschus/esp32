@@ -111,10 +111,12 @@ class MainActivity : ComponentActivity() {
         setContent {
             LaunchedEffect(Unit) {
                 vm.registerMapCallbacks(
-                        enableFollow = { mapController.enableFollow() },
-                        setCenter    = { lat, lon -> mapController.animateTo(lat, lon) },
-                        setZoom      = { z -> mapController.setZoom(z) },
-                        setRoute     = { pts -> mapController.setRoute(pts) },
+                        enableFollow  = { mapController.enableFollow() },
+                        setCenter     = { lat, lon -> mapController.animateTo(lat, lon) },
+                        setZoom       = { z -> mapController.setZoom(z) },
+                        setRoute      = { pts -> mapController.setRoute(pts) },
+                        setNavMode    = { enabled -> mapController.setNavMode(enabled) },
+                        updateBearing = { bearing -> mapController.updateBearing(bearing) },
                 )
             }
 
@@ -224,8 +226,8 @@ fun MainScreen(
                     )
                 }
 
-                // Buscador de destino (solo cuando conectado)
-                if (state.isConnected) {
+                // Buscador de destino (siempre visible si hay GPS, con o sin ESP32)
+                if (state.location != null || state.route != null) {
                     NavSearchBar(
                         route       = state.route,
                         destination = state.navDestination,
