@@ -40,6 +40,7 @@ export interface RouteResponse {
   bbox: [number, number, number, number];
   points: string;
   points_encoded_multiplier: number;
+  elevation: boolean;
   instructions: Pick<
     GraphHopperInstruction,
     'text' | 'street_name' | 'distance' | 'time' | 'sign' | 'interval'

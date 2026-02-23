@@ -5,6 +5,10 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.drawable.BitmapDrawable
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -15,6 +19,8 @@ import org.osmdroid.events.ZoomEvent
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Polyline
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 
@@ -32,7 +38,13 @@ class MapController(context: Context) {
 
     val mapView: MapView
     private val locationOverlay: MyLocationNewOverlay
+    private var routeOverlay: Polyline? = null
+    private var destMarker: Marker? = null
     private var following = true
+    private var navMode = false
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var reEnableFollowRunnable: Runnable = Runnable {}
 
     init {
         Configuration.getInstance().apply {
@@ -67,7 +79,16 @@ class MapController(context: Context) {
                 }
         mapView.overlays.add(locationOverlay)
 
-        // Cuando el usuario mueve el mapa manualmente, pausamos el seguimiento automático
+        reEnableFollowRunnable = Runnable {
+            if (navMode) {
+                locationOverlay.enableFollowLocation()
+                following = true
+                Log.d(TAG, "nav mode: seguimiento reactivado automáticamente")
+            }
+        }
+
+        // Cuando el usuario mueve el mapa manualmente, pausamos el seguimiento automático.
+        // En nav mode se programa la reactivación automática a los 5 s.
         mapView.addMapListener(
                 object : MapListener {
                     override fun onScroll(event: ScrollEvent): Boolean {
@@ -75,6 +96,10 @@ class MapController(context: Context) {
                             locationOverlay.disableFollowLocation()
                             following = false
                             Log.d(TAG, "seguimiento pausado (pan manual)")
+                        }
+                        if (navMode) {
+                            mainHandler.removeCallbacks(reEnableFollowRunnable)
+                            mainHandler.postDelayed(reEnableFollowRunnable, 5_000L)
                         }
                         return false
                     }
@@ -100,6 +125,60 @@ class MapController(context: Context) {
 
     fun setZoom(zoom: Int) {
         mapView.controller.setZoom(zoom.toDouble())
+    }
+
+    /**
+     * Activa/desactiva el modo navegación.
+     * Activado: zoom 17, seguimiento forzado, mapa se rota con el heading del usuario.
+     * Desactivado: mapa vuelve a orientación norte-arriba.
+     */
+    fun setNavMode(enabled: Boolean) {
+        navMode = enabled
+        mainHandler.removeCallbacks(reEnableFollowRunnable)
+        if (enabled) {
+            mapView.controller.setZoom(17.0)
+            locationOverlay.enableFollowLocation()
+            following = true
+            Log.d(TAG, "nav mode ON")
+        } else {
+            mapView.setMapOrientation(0f)
+            Log.d(TAG, "nav mode OFF")
+        }
+    }
+
+    /**
+     * Rota el mapa para que el heading del usuario quede hacia arriba.
+     * Solo tiene efecto en nav mode.
+     */
+    fun updateBearing(bearing: Float) {
+        if (!navMode) return
+        mapView.setMapOrientation(-bearing)
+    }
+
+    /** Dibuja (o borra) la ruta como polilínea azul + ícono de destino sobre el mapa Android. */
+    fun setRoute(points: List<Pair<Double, Double>>) {
+        routeOverlay?.let { mapView.overlays.remove(it) }
+        routeOverlay = null
+        destMarker?.let { mapView.overlays.remove(it) }
+        destMarker = null
+        if (points.isNotEmpty()) {
+            routeOverlay = Polyline().apply {
+                setPoints(points.map { (lat, lon) -> GeoPoint(lat, lon) })
+                outlinePaint.color = Color.rgb(0x44, 0x88, 0xFF)
+                outlinePaint.strokeWidth = 8f
+            }
+            // Ruta detrás, ícono de destino encima de la ruta pero debajo del marcador de usuario
+            mapView.overlays.add(0, routeOverlay)
+            val dest = points.last()
+            destMarker = Marker(mapView).apply {
+                position = GeoPoint(dest.first, dest.second)
+                icon = makeDestIcon()
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                setInfoWindow(null) // sin popup al tocar
+            }
+            mapView.overlays.add(1, destMarker!!)
+        }
+        mapView.invalidate()
     }
 
     /**
@@ -182,5 +261,50 @@ class MapController(context: Context) {
         c.drawCircle(cx, cy, cx * 0.45f, paint)
 
         return bmp
+    }
+
+    /**
+     * Ícono de destino: pin rojo con borde blanco y punta hacia abajo.
+     * El anchor del Marker se coloca en el centro-bottom del bitmap (la punta del pin).
+     */
+    private fun makeDestIcon(): BitmapDrawable {
+        val ctx = mapView.context
+        val density = ctx.resources.displayMetrics.density
+        val r = (13 * density).toInt().coerceAtLeast(13)  // radio del círculo
+        val tailH = (11 * density).toInt().coerceAtLeast(11) // altura de la punta
+        val w = r * 2
+        val h = r * 2 + tailH
+
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val cx = w / 2f
+        val cy = r.toFloat()
+
+        // Sombra suave
+        paint.color = Color.argb(70, 0, 0, 0)
+        canvas.drawCircle(cx + 1.5f, cy + 1.5f, r.toFloat(), paint)
+
+        // Círculo rojo
+        paint.color = Color.rgb(0xFF, 0x44, 0x44)
+        canvas.drawCircle(cx, cy, r.toFloat(), paint)
+
+        // Anillo blanco
+        paint.color = Color.WHITE
+        canvas.drawCircle(cx, cy, r * 0.62f, paint)
+
+        // Centro rojo interno
+        paint.color = Color.rgb(0xFF, 0x44, 0x44)
+        canvas.drawCircle(cx, cy, r * 0.38f, paint)
+
+        // Punta triangular hacia abajo
+        val path = Path()
+        path.moveTo(cx - r * 0.45f, cy + r * 0.72f)
+        path.lineTo(cx + r * 0.45f, cy + r * 0.72f)
+        path.lineTo(cx, h.toFloat())
+        path.close()
+        canvas.drawPath(path, paint)
+
+        return BitmapDrawable(ctx.resources, bmp)
     }
 }

@@ -3,12 +3,20 @@ package com.tschuster.esp32nav.network
 import android.net.Network
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+
+data class GeocodeSuggestion(
+    val label: String,
+    val lat: Double,
+    val lon: Double,
+)
 
 data class NavStep(
     val instruction: String,
@@ -20,17 +28,15 @@ data class NavStep(
 data class NavRoute(
     val steps: List<NavStep>,
     val totalDistanceM: Int,
-    val totalDurationSec: Int
+    val totalDurationSec: Int,
+    val geometry: List<Pair<Double, Double>> = emptyList()
 ) {
     val etaMin: Int get() = totalDurationSec / 60
 }
 
-/**
- * Geocodificación: Nominatim (OSM) — gratis, sin API key.
- * Routing:        OSRM público — gratis, sin API key.
- *
- * Ambas APIs usan internet (red celular, no WiFi del ESP32).
- */
+private const val BASE_URL = "https://maps.tomasschuster.com"
+private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
 class NavRouter {
 
     private val defaultClient = OkHttpClient.Builder()
@@ -40,7 +46,6 @@ class NavRouter {
 
     private var boundClient: OkHttpClient? = null
 
-    /** Vincular a la red de internet (datos móviles) para evitar rutar por el WiFi del ESP32. */
     fun setInternetNetwork(network: Network) {
         boundClient = OkHttpClient.Builder()
             .socketFactory(network.socketFactory)
@@ -51,24 +56,34 @@ class NavRouter {
 
     private val client get() = boundClient ?: defaultClient
 
-    // ── Geocodificar dirección → (lat, lon) ──────────────────────
-    suspend fun geocode(query: String): Pair<Double, Double>? = withContext(Dispatchers.IO) {
-        if (boundClient == null) return@withContext null
+    // ── Buscar sugerencias → lista de hits ───────────────────────
+    suspend fun suggest(
+        query: String,
+        userLat: Double? = null,
+        userLon: Double? = null,
+    ): List<GeocodeSuggestion> = withContext(Dispatchers.IO) {
+        if (boundClient == null) return@withContext emptyList()
         val encoded = URLEncoder.encode(query, "UTF-8")
-        val url = "https://nominatim.openstreetmap.org/search" +
-                  "?q=$encoded&format=json&limit=1&addressdetails=0"
-        val request = Request.Builder().url(url)
+        val latLon = if (userLat != null && userLon != null) "&lat=$userLat&lon=$userLon" else ""
+        val request = Request.Builder()
+            .url("$BASE_URL/geocode?q=$encoded$latLon")
             .header("User-Agent", "ESP32Nav/1.0")
             .build()
         try {
             client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext null
-                val arr = JSONArray(resp.body?.string() ?: return@withContext null)
-                if (arr.length() == 0) return@withContext null
-                val obj = arr.getJSONObject(0)
-                obj.getDouble("lat") to obj.getDouble("lon")
+                if (!resp.isSuccessful) return@withContext emptyList()
+                val hits = JSONObject(resp.body?.string() ?: return@withContext emptyList())
+                    .getJSONArray("hits")
+                (0 until hits.length()).map { i ->
+                    val h = hits.getJSONObject(i)
+                    GeocodeSuggestion(
+                        label = h.getString("label"),
+                        lat   = h.getDouble("lat"),
+                        lon   = h.getDouble("lon"),
+                    )
+                }
             }
-        } catch (e: Exception) { null }
+        } catch (e: Exception) { emptyList() }
     }
 
     // ── Calcular ruta → NavRoute ─────────────────────────────────
@@ -76,86 +91,90 @@ class NavRouter {
         fromLat: Double, fromLon: Double,
         toLat: Double,   toLon: Double
     ): NavRoute? = withContext(Dispatchers.IO) {
-        val url = "http://router.project-osrm.org/route/v1/driving/" +
-                  "${"%.5f".format(fromLon)},${"%.5f".format(fromLat)};" +
-                  "${"%.5f".format(toLon)},${"%.5f".format(toLat)}" +
-                  "?steps=true&overview=false"
-        val request = Request.Builder().url(url).build()
+        val bodyJson = JSONObject().apply {
+            put("from", JSONArray().put(fromLon).put(fromLat))
+            put("to",   JSONArray().put(toLon).put(toLat))
+            put("profile", "car")
+        }
+        val request = Request.Builder()
+            .url("$BASE_URL/route")
+            .post(bodyJson.toString().toRequestBody(JSON_MEDIA_TYPE))
+            .build()
         try {
             client.newCall(request).execute().use { resp ->
                 if (!resp.isSuccessful) return@withContext null
-                val root  = JSONObject(resp.body?.string() ?: return@withContext null)
-                if (root.getString("code") != "Ok") return@withContext null
-                val route = root.getJSONArray("routes").getJSONObject(0)
-                val leg   = route.getJSONArray("legs").getJSONObject(0)
+                val root = JSONObject(resp.body?.string() ?: return@withContext null)
 
-                val distM = leg.getDouble("distance").toInt()
-                val durS  = leg.getDouble("duration").toInt()
+                val distM = root.getDouble("distance").toInt()
+                val durS  = (root.getLong("time") / 1000).toInt()
+                val multiplier = root.optDouble("points_encoded_multiplier", 1e6)
 
+                // El backend indica explícitamente si el polyline incluye elevación (3D).
+                // Default true: compatibilidad con backend deployado antes de agregar este campo.
+                val withElevation = root.optBoolean("elevation", true)
+                val geometry = decodePolyline(root.getString("points"), multiplier, withElevation)
+
+                val instructionsArr = root.getJSONArray("instructions")
                 val steps = mutableListOf<NavStep>()
-                val stepsArr = leg.getJSONArray("steps")
-                for (i in 0 until stepsArr.length()) {
-                    val step     = stepsArr.getJSONObject(i)
-                    val maneuver = step.getJSONObject("maneuver")
-                    val loc      = maneuver.getJSONArray("location")
-                    val street   = step.optString("name", "")
-                    steps.add(
-                        NavStep(
-                            instruction = buildInstruction(maneuver, street),
-                            distanceM   = step.getDouble("distance").toInt(),
-                            lon         = loc.getDouble(0),
-                            lat         = loc.getDouble(1)
-                        )
-                    )
+                for (i in 0 until instructionsArr.length()) {
+                    val instr  = instructionsArr.getJSONObject(i)
+                    val ptIdx  = instr.getJSONArray("interval").getInt(0)
+                    val (lat, lon) = if (ptIdx < geometry.size) geometry[ptIdx] else 0.0 to 0.0
+                    steps.add(NavStep(
+                        instruction = instr.getString("text"),
+                        distanceM   = instr.getDouble("distance").toInt(),
+                        lat         = lat,
+                        lon         = lon
+                    ))
                 }
-                NavRoute(steps, distM, durS)
+
+                NavRoute(steps, distM, durS, geometry)
             }
         } catch (e: Exception) { null }
     }
 
-    // ── Construir instrucción en castellano ──────────────────────
-    private fun buildInstruction(maneuver: JSONObject, street: String): String {
-        val type     = maneuver.optString("type", "")
-        val modifier = maneuver.optString("modifier", "")
-        val via      = if (street.isNotBlank()) " por $street" else ""
+    // ── Decodificar polyline (GraphHopper usa multiplier=1e6) ────
+    // withElevation=true cuando GraphHopper devuelve puntos 3D (lat,lon,ele):
+    // en ese caso hay que leer y descartar el tercer valor para no corromper los siguientes.
+    private fun decodePolyline(encoded: String, multiplier: Double, withElevation: Boolean = false): List<Pair<Double, Double>> {
+        val result = mutableListOf<Pair<Double, Double>>()
+        var index = 0
+        var lat = 0
+        var lon = 0
+        while (index < encoded.length) {
+            var b: Int
+            var shift = 0
+            var chunk = 0
+            do {
+                b = encoded[index++].code - 63
+                chunk = chunk or ((b and 0x1f) shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            lat += if (chunk and 1 != 0) (chunk shr 1).inv() else chunk shr 1
 
-        return when (type) {
-            "depart"  -> "Salir$via"
-            "arrive"  -> "Llegaste al destino"
-            "turn"    -> when (modifier) {
-                "left"        -> "Girar a la izquierda$via"
-                "right"       -> "Girar a la derecha$via"
-                "sharp left"  -> "Giro brusco a la izquierda$via"
-                "sharp right" -> "Giro brusco a la derecha$via"
-                "slight left" -> "Girar levemente a la izquierda$via"
-                "slight right"-> "Girar levemente a la derecha$via"
-                "uturn"       -> "Dar la vuelta"
-                else          -> "Continuar$via"
+            shift = 0
+            chunk = 0
+            do {
+                b = encoded[index++].code - 63
+                chunk = chunk or ((b and 0x1f) shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            lon += if (chunk and 1 != 0) (chunk shr 1).inv() else chunk shr 1
+
+            // Saltear elevación si está presente (3D polyline)
+            if (withElevation) {
+                shift = 0
+                chunk = 0
+                do {
+                    b = encoded[index++].code - 63
+                    chunk = chunk or ((b and 0x1f) shl shift)
+                    shift += 5
+                } while (b >= 0x20)
+                // valor de elevación descartado
             }
-            "new name"   -> "Continuar$via"
-            "merge"      -> "Incorporarse$via"
-            "on ramp"    -> "Tomar la rampa$via"
-            "off ramp"   -> "Salir por la rampa$via"
-            "fork"       -> "En el cruce, ${dirSpan(modifier)}$via"
-            "end of road"-> "Al final de la calle, ${dirSpan(modifier)}"
-            "roundabout", "rotary" -> {
-                val exit = maneuver.optInt("exit", 0)
-                "Entrar a la rotonda, tomar la ${ordinal(exit)} salida$via"
-            }
-            else -> "Continuar$via"
+
+            result.add(lat / multiplier to lon / multiplier)
         }
-    }
-
-    private fun dirSpan(modifier: String) = when (modifier) {
-        "left"  -> "ir a la izquierda"
-        "right" -> "ir a la derecha"
-        "slight left"  -> "ir levemente a la izquierda"
-        "slight right" -> "ir levemente a la derecha"
-        else -> "continuar"
-    }
-
-    private fun ordinal(n: Int) = when (n) {
-        1 -> "primera"; 2 -> "segunda"; 3 -> "tercera"
-        4 -> "cuarta";  5 -> "quinta";  else -> "${n}a"
+        return result
     }
 }

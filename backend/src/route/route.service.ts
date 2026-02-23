@@ -38,7 +38,7 @@ export class RouteService {
         body: JSON.stringify({
           points: [from, to],
           profile,
-          elevation: true,
+          elevation: false,
           instructions: true,
           locale: 'es',
           points_encoded: true,
@@ -61,6 +61,7 @@ export class RouteService {
       bbox: path.bbox,
       points: path.points,
       points_encoded_multiplier: path.points_encoded_multiplier,
+      elevation: false,
       instructions: path.instructions.map((i) => ({
         text: i.text,
         street_name: i.street_name,

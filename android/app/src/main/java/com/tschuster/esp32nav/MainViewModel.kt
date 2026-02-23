@@ -7,11 +7,16 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tschuster.esp32nav.location.LocationTracker
 import com.tschuster.esp32nav.network.Esp32Client
+import com.tschuster.esp32nav.network.GeocodeSuggestion
 import com.tschuster.esp32nav.network.NavRoute
 import com.tschuster.esp32nav.network.NavRouter
 import com.tschuster.esp32nav.network.NetworkManager
+import com.tschuster.esp32nav.network.VectorFetcher
+import com.tschuster.esp32nav.util.VectorRenderer
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,11 +36,13 @@ data class UiState(
         val scanResults: List<String> = emptyList(),
         val lastSsid: String? = null,
         val location: Location? = null,
-        val zoom: Int = 15,
+        val zoom: Int = 17,
         val route: NavRoute? = null,
         val currentStepIndex: Int = 0,
         val navDestination: String = "",
         val isSearchingRoute: Boolean = false,
+        val suggestions: List<GeocodeSuggestion> = emptyList(),
+        val isSearchingSuggestions: Boolean = false,
         val errorMsg: String? = null,
 )
 
@@ -45,21 +52,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val locationTracker = LocationTracker(app)
     private val navRouter = NavRouter()
     private val esp32Client = Esp32Client()
+    private val vectorFetcher = VectorFetcher()
 
     private val _ui = MutableStateFlow(UiState(lastSsid = networkManager.getLastSsid()))
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
     private var lastLocation: Location? = null
     private var mapJob: Job? = null
+    private var roadsJob: Job? = null
     private var wsRetryJob: Job? = null
     private var autoReconnectJob: Job? = null
+    private var suggestionsJob: Job? = null
     private var stepIdx = 0
 
-    // Callbacks registrados por la UI para controlar el MapView
-    private var captureCallback: (() -> ByteArray?)? = null
+    // Callbacks registrados por la UI para controlar el MapView (Android)
     private var enableFollowCallback: (() -> Unit)? = null
     private var setCenterCallback: ((Double, Double) -> Unit)? = null
     private var setZoomCallback: ((Int) -> Unit)? = null
+    private var setRouteCallback: ((List<Pair<Double, Double>>) -> Unit)? = null
+    private var setNavModeCallback: ((Boolean) -> Unit)? = null
+    private var updateBearingCallback: ((Float) -> Unit)? = null
     private var initialCenterDone = false
 
     init {
@@ -72,20 +84,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ── Callbacks del mapa ────────────────────────────────────────────
     /**
      * Registrado desde la Activity una vez que el MapView está listo.
-     * [capture]      → dibuja el MapView y devuelve JPEG bytes (hilo principal).
-     * [enableFollow] → reactiva el seguimiento automático de ubicación.
-     * [setZoom]      → cambia el zoom del mapa.
+     * [enableFollow]  → reactiva el seguimiento automático de ubicación.
+     * [setCenter]     → centra el mapa en una coordenada.
+     * [setZoom]       → cambia el zoom del mapa.
+     * [setRoute]      → dibuja la ruta como polilínea en el mapa Android.
+     * [setNavMode]    → activa/desactiva modo navegación (seguimiento + rotación).
+     * [updateBearing] → rota el mapa según el heading del usuario.
      */
     fun registerMapCallbacks(
-            capture: () -> ByteArray?,
             enableFollow: () -> Unit,
             setCenter: (Double, Double) -> Unit,
             setZoom: (Int) -> Unit,
+            setRoute: (List<Pair<Double, Double>>) -> Unit,
+            setNavMode: (Boolean) -> Unit,
+            updateBearing: (Float) -> Unit,
     ) {
-        captureCallback = capture
         enableFollowCallback = enableFollow
         setCenterCallback = setCenter
         setZoomCallback = setZoom
+        setRouteCallback = setRoute
+        setNavModeCallback = setNavMode
+        updateBearingCallback = updateBearing
         // Si ya tenemos ubicación cuando se registran los callbacks (Activity recreada),
         // centrar inmediatamente sin esperar al próximo tick de GPS.
         if (!initialCenterDone) {
@@ -93,6 +112,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 setCenter(loc.latitude, loc.longitude)
                 initialCenterDone = true
             }
+        }
+        // Restaurar ruta si ya hay una activa (p.ej. tras rotación de pantalla)
+        _ui.value.route?.let { route ->
+            setRoute(route.geometry)
+            setNavMode(true)
         }
     }
 
@@ -156,13 +180,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 .launchIn(viewModelScope)
 
-        // La red celular se usa para geocoding y routing (NavRouter)
+        // La red celular se usa para geocoding, routing y Overpass API
         networkManager
                 .cellNetwork
                 .filterNotNull()
                 .onEach { network ->
-                    Log.i(TAG, "cellNetwork recibido → NavRouter usará esta red")
+                    Log.i(TAG, "cellNetwork recibido → NavRouter + VectorFetcher usarán esta red")
                     navRouter.setInternetNetwork(network)
+                    vectorFetcher.setInternetNetwork(network)
                 }
                 .launchIn(viewModelScope)
 
@@ -194,6 +219,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (!initialCenterDone && setCenterCallback != null) {
                         setCenterCallback?.invoke(loc.latitude, loc.longitude)
                         initialCenterDone = true
+                    }
+                    // Nav mode: rotar el mapa con el heading del usuario
+                    if (_ui.value.route != null && loc.hasBearing()) {
+                        updateBearingCallback?.invoke(loc.bearing)
                     }
                 }
                 .launchIn(viewModelScope)
@@ -240,26 +269,77 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ── Map loop ──────────────────────────────────────────────────────
-    // Captura el MapView (renderizado en pantalla con tiles OSM reales)
-    // y envía el JPEG al ESP32 por WebSocket cada 5 segundos.
+    // Envía un frame vectorial (calles + ruta + posición) al ESP32 cada 1 segundo.
+    // Las calles se obtienen de Overpass API con caché; la ruta viene de OSRM.
     private fun startMapLoop() {
         mapJob?.cancel()
-        Log.i(TAG, "startMapLoop: capturando mapa OSM cada 1 s → ESP32")
-        mapJob =
-                viewModelScope.launch {
-                    while (true) {
-                        if (_ui.value.isConnected) {
-                            val tile = captureCallback?.invoke()
-                            if (tile != null) {
-                                Log.d(TAG, "tile capturado: ${tile.size} bytes → enviando al ESP32")
-                                esp32Client.sendMapTile(tile)
-                            } else {
-                                Log.d(TAG, "tile null: MapView no listo aún")
+        roadsJob?.cancel()
+        Log.i(TAG, "startMapLoop: enviando frames vectoriales cada 1 s → ESP32")
+        mapJob = viewModelScope.launch {
+            while (true) {
+                if (_ui.value.isConnected) {
+                    val loc = lastLocation
+                    if (loc != null) {
+                        val zoom = _ui.value.zoom.toDouble()
+
+                        // Disparar consulta Overpass en background si es necesario y no hay una en curso
+                        if (vectorFetcher.needsRefresh(loc.latitude, loc.longitude) &&
+                                roadsJob?.isActive != true) {
+                            roadsJob = viewModelScope.launch(Dispatchers.IO) {
+                                vectorFetcher.fetchAndCache(loc.latitude, loc.longitude)
                             }
                         }
-                        delay(1_000L)
+
+                        // Toda la geometría en Default para no bloquear el hilo principal
+                        val routeGeometry = _ui.value.route?.geometry
+                        val json = withContext(Dispatchers.Default) {
+                            val roads = vectorFetcher.getCachedRoads(zoom, loc.latitude, loc.longitude)
+
+                            val routePx = routeGeometry?.map { (lat, lon) ->
+                                VectorRenderer.latLonToPixel(lat, lon, loc.latitude, loc.longitude, zoom)
+                            }?.let { VectorRenderer.simplify(it, 1.5) } ?: emptyList()
+
+                            val bearing = if (loc.hasBearing()) loc.bearing else -1f
+                            val heading = bearing.toInt()
+                            val cx = VectorRenderer.SCREEN_W / 2
+                            val cy = VectorRenderer.POS_Y
+
+                            val rotatedRoads = if (bearing >= 0f) roads.map { seg ->
+                                VectorRenderer.RoadSegment(
+                                    VectorRenderer.rotatePoints(seg.pixels, bearing, cx, cy),
+                                    seg.width,
+                                    seg.name
+                                )
+                            } else roads
+                            val rotatedRoute = if (bearing >= 0f)
+                                VectorRenderer.rotatePoints(routePx, bearing, cx, cy)
+                            else routePx
+
+                            val labels = buildList<VectorRenderer.StreetLabel> {
+                                val seen = mutableSetOf<String>()
+                                rotatedRoads
+                                    .filter { it.name.isNotBlank() }
+                                    .sortedByDescending { it.width }
+                                    .forEach { seg ->
+                                        if (seg.name !in seen && size < 20) {
+                                            val mid = seg.pixels.getOrNull(seg.pixels.size / 2) ?: return@forEach
+                                            if (mid.first in -10..330 && mid.second in -10..490) {
+                                                seen.add(seg.name)
+                                                add(VectorRenderer.StreetLabel(mid.first, mid.second, seg.name))
+                                            }
+                                        }
+                                    }
+                            }
+
+                            VectorRenderer.buildFrame(rotatedRoads, rotatedRoute, labels, cx, cy, heading)
+                        }
+                        esp32Client.sendVectorFrame(json)
+                        Log.d(TAG, "vec frame: ${json.length} chars")
                     }
                 }
+                delay(1_000L)
+            }
+        }
     }
 
     // ── Zoom / centrar ────────────────────────────────────────────────
@@ -270,66 +350,60 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun centerOnLocation() {
-        // Reactiva el seguimiento automático (OSMDroid centra en la última ubicación conocida)
         enableFollowCallback?.invoke()
-        // Captura inmediata tras que el mapa se re-centra
-        viewModelScope.launch {
-            delay(600L)
-            val tile = captureCallback?.invoke() ?: return@launch
-            Log.d(TAG, "centerOnLocation: tile ${tile.size} bytes → ESP32")
-            esp32Client.sendMapTile(tile)
-        }
     }
 
     // ── Navegación ────────────────────────────────────────────────────
-    fun searchRoute(destination: String) {
-        if (destination.isBlank()) return
-        val origin =
-                lastLocation
-                        ?: run {
-                            _ui.value = _ui.value.copy(errorMsg = "Sin ubicación aún")
-                            return
-                        }
-        _ui.value =
-                _ui.value.copy(
-                        isSearchingRoute = true,
-                        navDestination = destination,
-                        errorMsg = null,
-                )
+
+    /** Paso 1: busca sugerencias en la API y las muestra al usuario. */
+    fun searchSuggestions(query: String) {
+        if (query.isBlank()) {
+            _ui.value = _ui.value.copy(suggestions = emptyList(), isSearchingSuggestions = false)
+            return
+        }
+        suggestionsJob?.cancel()
+        _ui.value = _ui.value.copy(isSearchingSuggestions = true, suggestions = emptyList(), errorMsg = null)
+        val origin = lastLocation
+        suggestionsJob = viewModelScope.launch {
+            val hits = navRouter.suggest(query, origin?.latitude, origin?.longitude)
+            _ui.value = _ui.value.copy(isSearchingSuggestions = false, suggestions = hits)
+        }
+    }
+
+    /** Paso 2: el usuario eligió una sugerencia → calcular ruta. */
+    fun routeToSuggestion(suggestion: GeocodeSuggestion) {
+        val origin = lastLocation ?: run {
+            _ui.value = _ui.value.copy(errorMsg = "Sin ubicación aún", suggestions = emptyList())
+            return
+        }
+        _ui.value = _ui.value.copy(
+            isSearchingRoute = true,
+            navDestination = suggestion.label,
+            suggestions = emptyList(),
+            errorMsg = null,
+        )
         viewModelScope.launch {
-            val destCoord = navRouter.geocode(destination)
-            if (destCoord == null) {
-                _ui.value =
-                        _ui.value.copy(
-                                isSearchingRoute = false,
-                                errorMsg = "No se encontró \"$destination\"",
-                        )
-                return@launch
-            }
-            val route =
-                    navRouter.route(
-                            origin.latitude,
-                            origin.longitude,
-                            destCoord.first,
-                            destCoord.second
-                    )
+            val route = navRouter.route(origin.latitude, origin.longitude, suggestion.lat, suggestion.lon)
             if (route == null) {
-                _ui.value =
-                        _ui.value.copy(
-                                isSearchingRoute = false,
-                                errorMsg = "No se pudo calcular la ruta",
-                        )
+                _ui.value = _ui.value.copy(isSearchingRoute = false, errorMsg = "No se pudo calcular la ruta")
                 return@launch
             }
             stepIdx = 0
-            _ui.value =
-                    _ui.value.copy(isSearchingRoute = false, route = route, currentStepIndex = 0)
+            _ui.value = _ui.value.copy(isSearchingRoute = false, route = route, currentStepIndex = 0)
+            setRouteCallback?.invoke(route.geometry)
+            setNavModeCallback?.invoke(true)
             sendCurrentStep()
         }
     }
 
+    fun clearSuggestions() {
+        _ui.value = _ui.value.copy(suggestions = emptyList())
+    }
+
     fun clearRoute() {
-        _ui.value = _ui.value.copy(route = null, currentStepIndex = 0, navDestination = "")
+        _ui.value = _ui.value.copy(route = null, currentStepIndex = 0, navDestination = "", suggestions = emptyList())
+        setRouteCallback?.invoke(emptyList())
+        setNavModeCallback?.invoke(false)
         esp32Client.sendNavStep("Sin navegación", 0, 0)
     }
 
@@ -363,8 +437,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         super.onCleared()
         mapJob?.cancel()
+        roadsJob?.cancel()
         wsRetryJob?.cancel()
         autoReconnectJob?.cancel()
+        suggestionsJob?.cancel()
         esp32Client.disconnect()
     }
 }
