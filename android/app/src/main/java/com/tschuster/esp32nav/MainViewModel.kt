@@ -212,7 +212,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 .onEach { loc ->
                     lastLocation = loc
                     _ui.value = _ui.value.copy(location = loc)
-                    esp32Client.sendGps(loc.latitude, loc.longitude)
+                    val speedKmh = if (loc.hasSpeed()) (loc.speed * 3.6f).toInt() else 0
+                    esp32Client.sendGps(loc.latitude, loc.longitude, speedKmh)
                     advanceNavStep(loc)
                     // Primera ubicación: centrar el mapa explícitamente una sola vez.
                     // Las siguientes actualizaciones las maneja enableFollowLocation().

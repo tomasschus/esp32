@@ -29,6 +29,8 @@ static uint16_t          *s_map_buf  = nullptr;
 static maps_ws_on_frame_t s_on_frame = nullptr;
 static maps_ws_on_vec_t   s_on_vec   = nullptr;
 static maps_ws_on_nav_t   s_on_nav   = nullptr;
+static maps_ws_on_gps_t   s_on_gps   = nullptr;
+static bool               s_has_client = false;
 static uint8_t           *s_jpeg_buf = nullptr;
 static char              *s_text_buf = nullptr;
 static vec_frame_t       *s_vec_frame = nullptr;
@@ -43,6 +45,14 @@ static bool maps_jpeg_output(int16_t x, int16_t y, uint16_t w, uint16_t h,
            bitmap + row * w, (size_t)w * 2);
   }
   return 1;
+}
+
+/* ── Parser de velocidad GPS ─────────────────────────────────────── */
+static void parse_gps_spd(const char *json, size_t len) {
+  if (!s_on_gps) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, json, len) != DeserializationError::Ok) return;
+  s_on_gps(doc["spd"] | 0);
 }
 
 /* ── Parser de frame vectorial ───────────────────────────────────── */
@@ -129,10 +139,12 @@ static void on_ws_event(AsyncWebSocket *ws, AsyncWebSocketClient *client,
 
   if (type == WS_EVT_CONNECT) {
     Serial.println("[Maps] cliente conectado");
+    s_has_client = true;
     return;
   }
   if (type == WS_EVT_DISCONNECT) {
     Serial.println("[Maps] cliente desconectado");
+    s_has_client = false;
     return;
   }
   if (type != WS_EVT_DATA || len == 0) return;
@@ -209,6 +221,8 @@ static void on_ws_event(AsyncWebSocket *ws, AsyncWebSocketClient *client,
       parse_vec_frame(s_text_buf, total);
     else if (strncmp(t_start, "nav", 3) == 0)
       parse_nav_step(s_text_buf, total);
+    else if (strncmp(t_start, "gps", 3) == 0)
+      parse_gps_spd(s_text_buf, total);
   }
 }
 
@@ -249,6 +263,9 @@ bool maps_ws_start(uint16_t *map_buf, maps_ws_on_frame_t on_frame,
   return true;
 }
 
+/* ── maps_ws_set_gps_cb ──────────────────────────────────────────── */
+void maps_ws_set_gps_cb(maps_ws_on_gps_t cb) { s_on_gps = cb; }
+
 /* ── maps_ws_stop ────────────────────────────────────────────────── */
 void maps_ws_stop(void) {
   if (s_server) { s_server->end(); delete s_server; s_server = nullptr; }
@@ -260,7 +277,10 @@ void maps_ws_stop(void) {
   s_on_frame = nullptr;
   s_on_vec   = nullptr;
   s_on_nav   = nullptr;
+  s_on_gps     = nullptr;
+  s_has_client = false;
   WiFi.softAPdisconnect(true);
 }
 
 bool maps_ws_is_running(void) { return s_server != nullptr; }
+bool maps_ws_has_client(void) { return s_has_client; }

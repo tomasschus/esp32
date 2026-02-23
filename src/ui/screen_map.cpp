@@ -37,11 +37,15 @@ static lv_obj_t  *canvas      = nullptr;
 static lv_obj_t  *lbl_waiting = nullptr;
 static lv_obj_t  *lbl_nav     = nullptr;  /* instrucción actual */
 static lv_obj_t  *lbl_dist    = nullptr;  /* distancia al próximo giro */
+static lv_obj_t  *lbl_spd     = nullptr;  /* velocidad GPS */
+static lv_obj_t  *spd_circle  = nullptr;  /* contenedor del círculo */
 static uint16_t  *s_map_buf   = nullptr;
 
 static volatile bool     s_vec_dirty = false;
 static volatile bool     s_nav_dirty = false;
+static volatile bool     s_spd_dirty = false;
 static volatile bool     s_has_received_frame = false;
+static volatile int      s_pending_spd = 0;
 static lv_timer_t       *s_dirty_timer = nullptr;
 
 /* Copias seguras para acceso desde el timer (hilo LVGL) – en PSRAM */
@@ -63,6 +67,11 @@ static void on_vec_frame(const vec_frame_t &f) {
 static void on_nav_step(const nav_step_t &n) {
   memcpy(&s_pending_nav, &n, sizeof(nav_step_t));
   s_nav_dirty = true;
+}
+
+static void on_gps_speed(int speed_kmh) {
+  s_pending_spd = speed_kmh;
+  s_spd_dirty   = true;
 }
 
 /* ── Dibujo del frame vectorial sobre el canvas ──────────────────── */
@@ -182,6 +191,22 @@ static void dirty_timer_cb(lv_timer_t *t) {
     lv_label_set_text(lbl_dist, s_pending_nav.dist);
     lv_obj_clear_flag(lv_obj_get_parent(lbl_nav), LV_OBJ_FLAG_HIDDEN);
   }
+
+  /* Mostrar/ocultar círculo de velocidad según conexión */
+  if (spd_circle) {
+    bool connected = maps_ws_has_client();
+    bool hidden    = lv_obj_has_flag(spd_circle, LV_OBJ_FLAG_HIDDEN);
+    if (connected && hidden)
+      lv_obj_clear_flag(spd_circle, LV_OBJ_FLAG_HIDDEN);
+    else if (!connected && !hidden)
+      lv_obj_add_flag(spd_circle, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  /* Actualizar velocidad GPS */
+  if (s_spd_dirty && lbl_spd) {
+    s_spd_dirty = false;
+    lv_label_set_text_fmt(lbl_spd, "%d", (int)s_pending_spd);
+  }
 }
 
 /* ── screen_map_create ───────────────────────────────────────────── */
@@ -282,6 +307,34 @@ void screen_map_create(void) {
   lv_obj_set_style_text_color(lbl_back, COLOR_TEXT, 0);
   lv_obj_center(lbl_back);
 
+  /* ── Círculo de velocidad (esquina inferior derecha) ────────── */
+  spd_circle = lv_obj_create(scr);
+  lv_obj_set_size(spd_circle, 64, 64);
+  lv_obj_align(spd_circle, LV_ALIGN_BOTTOM_RIGHT, -8, -8);
+  lv_obj_set_style_bg_color(spd_circle, lv_color_white(), 0);
+  lv_obj_set_style_bg_opa(spd_circle, LV_OPA_90, 0);
+  lv_obj_set_style_radius(spd_circle, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_border_width(spd_circle, 0, 0);
+  lv_obj_set_style_pad_all(spd_circle, 0, 0);
+  lv_obj_clear_flag(spd_circle, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(spd_circle, LV_OBJ_FLAG_HIDDEN);
+
+  /* Número (grande) */
+  lbl_spd = lv_label_create(spd_circle);
+  lv_label_set_text(lbl_spd, "0");
+  lv_obj_set_style_text_font(lbl_spd, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(lbl_spd, lv_color_black(), 0);
+  lv_obj_set_style_text_align(lbl_spd, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(lbl_spd, LV_ALIGN_CENTER, 0, -6);
+
+  /* Unidad "km/h" (pequeña, abajo) */
+  lv_obj_t *lbl_unit = lv_label_create(spd_circle);
+  lv_label_set_text(lbl_unit, "km/h");
+  lv_obj_set_style_text_font(lbl_unit, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_color(lbl_unit, lv_color_hex(0x444444), 0);
+  lv_obj_set_style_text_align(lbl_unit, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(lbl_unit, LV_ALIGN_CENTER, 0, 12);
+
   /* ── Timer de refresco ──────────────────────────────────────── */
   s_dirty_timer = lv_timer_create(dirty_timer_cb, 100, nullptr);
 }
@@ -298,8 +351,10 @@ void screen_map_start(void) {
   s_nav_dirty          = false;
   if (lbl_waiting)
     lv_obj_clear_flag(lbl_waiting, LV_OBJ_FLAG_HIDDEN);
-  if (s_map_buf)
+  if (s_map_buf) {
     maps_ws_start(s_map_buf, on_map_frame, on_vec_frame, on_nav_step);
+    maps_ws_set_gps_cb(on_gps_speed);
+  }
 }
 
 void screen_map_stop(void) {

@@ -94,8 +94,8 @@ class Esp32Client {
     }
 
     // ── Enviar GPS ───────────────────────────────────────────────
-    fun sendGps(lat: Double, lon: Double) {
-        ws?.send("""{"t":"gps","lat":${"%.6f".format(lat)},"lon":${"%.6f".format(lon)}}""")
+    fun sendGps(lat: Double, lon: Double, speedKmh: Int = 0) {
+        ws?.send("""{"t":"gps","lat":${"%.6f".format(lat)},"lon":${"%.6f".format(lon)},"spd":$speedKmh}""")
     }
 
     // ── Enviar tile de mapa (JPEG) ───────────────────────────────

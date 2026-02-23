@@ -59,11 +59,14 @@ struct nav_step_t {
 typedef void (*maps_ws_on_frame_t)(void);                   /* JPEG legacy */
 typedef void (*maps_ws_on_vec_t)(const vec_frame_t &frame); /* frame vectorial */
 typedef void (*maps_ws_on_nav_t)(const nav_step_t &step);   /* paso de nav */
+typedef void (*maps_ws_on_gps_t)(int speed_kmh);            /* velocidad GPS */
 
 /* ── API ─────────────────────────────────────────────────────────── */
 bool maps_ws_start(uint16_t          *map_buf,
                    maps_ws_on_frame_t on_frame,
                    maps_ws_on_vec_t   on_vec  = nullptr,
                    maps_ws_on_nav_t   on_nav  = nullptr);
+void maps_ws_set_gps_cb(maps_ws_on_gps_t cb);
 void maps_ws_stop(void);
 bool maps_ws_is_running(void);
+bool maps_ws_has_client(void);
