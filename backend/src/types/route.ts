@@ -1,6 +1,6 @@
 export interface RouteRequest {
   from: [number, number]; // [lon, lat]
-  to: [number, number];   // [lon, lat]
+  to: [number, number]; // [lon, lat]
   profile?: string;
 }
 
@@ -40,8 +40,11 @@ export interface RouteResponse {
   bbox: [number, number, number, number];
   points: string;
   points_encoded_multiplier: number;
-  instructions: Pick<GraphHopperInstruction, "text" | "street_name" | "distance" | "time" | "sign" | "interval">[];
-  details: GraphHopperPath["details"];
+  instructions: Pick<
+    GraphHopperInstruction,
+    'text' | 'street_name' | 'distance' | 'time' | 'sign' | 'interval'
+  >[];
+  details: GraphHopperPath['details'];
   ascend: number;
   descend: number;
   snapped_waypoints: string;
