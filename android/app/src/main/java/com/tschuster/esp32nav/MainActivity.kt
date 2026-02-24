@@ -251,6 +251,7 @@ fun MainScreen(
                                     isSearching =
                                             state.isSearchingRoute || state.isSearchingSuggestions,
                                     suggestions = state.suggestions,
+                                    recentSearches = state.recentSearches,
                                     onSearch = onSearch,
                                     onSelectSuggestion = onSelectSuggestion,
                                     onClearSuggestions = onClearSuggestions,
@@ -479,6 +480,7 @@ fun NavSearchBar(
         destination: String,
         isSearching: Boolean,
         suggestions: List<GeocodeSuggestion>,
+        recentSearches: List<GeocodeSuggestion>,
         onSearch: (String) -> Unit,
         onSelectSuggestion: (GeocodeSuggestion) -> Unit,
         onClearSuggestions: () -> Unit,
@@ -573,7 +575,45 @@ fun NavSearchBar(
             }
         }
 
-        // Dropdown de sugerencias
+        // Últimas búsquedas (cuando el campo está vacío y hay recientes)
+        if (query.isEmpty() && recentSearches.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                    text = "Últimas búsquedas",
+                    fontSize = 12.sp,
+                    color = Color(0x88EEEEEE),
+                    modifier = Modifier.padding(vertical = 4.dp),
+            )
+            Column {
+                recentSearches.forEachIndexed { i, suggestion ->
+                    if (i > 0) HorizontalDivider(color = Color(0x22FFFFFF))
+                    Row(
+                            modifier =
+                                    Modifier.fillMaxWidth()
+                                            .clickable { onSelectSuggestion(suggestion) }
+                                            .padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                                Icons.Default.LocationOn,
+                                contentDescription = null,
+                                tint = Color(0x88FFFFFF),
+                                modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                                text = suggestion.label,
+                                fontSize = 13.sp,
+                                color = Color(0xFFEEEEEE),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+
+        // Dropdown de sugerencias de la API
         if (suggestions.isNotEmpty()) {
             Spacer(Modifier.height(4.dp))
             Column {

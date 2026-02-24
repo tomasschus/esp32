@@ -2,6 +2,7 @@ package com.tschuster.esp32nav
 
 import android.app.Application
 import android.content.Intent
+import android.content.SharedPreferences
 import android.location.Location
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -29,6 +30,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private const val TAG = "ESP32Nav/VM"
+private const val PREF_RECENT = "recent_searches"
+private const val PREF_RECENT_PREFIX = "recent_"
+private const val MAX_RECENT = 3
 
 data class UiState(
         val status: String = "Iniciando…",
@@ -45,6 +49,7 @@ data class UiState(
         val isSearchingRoute: Boolean = false,
         val suggestions: List<GeocodeSuggestion> = emptyList(),
         val isSearchingSuggestions: Boolean = false,
+        val recentSearches: List<GeocodeSuggestion> = emptyList(),
         val errorMsg: String? = null,
 )
 
@@ -55,8 +60,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val navRouter = NavRouter()
     private val esp32Client = Esp32Client()
     private val vectorFetcher = VectorFetcher()
+    private val recentPrefs: SharedPreferences =
+            getApplication<Application>()
+                    .getSharedPreferences(PREF_RECENT, Application.MODE_PRIVATE)
 
-    private val _ui = MutableStateFlow(UiState(lastSsid = networkManager.getLastSsid()))
+    private val _ui =
+            MutableStateFlow(
+                    UiState(
+                            lastSsid = networkManager.getLastSsid(),
+                            recentSearches = loadRecentSearches(),
+                    )
+            )
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
     private var lastLocation: Location? = null
@@ -82,6 +96,48 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         observeLocation()
         networkManager.requestCellular()
         startAutoReconnect()
+    }
+
+    private fun loadRecentSearches(): List<GeocodeSuggestion> {
+        val list = mutableListOf<GeocodeSuggestion>()
+        for (i in 0 until MAX_RECENT) {
+            val label = recentPrefs.getString("${PREF_RECENT_PREFIX}${i}_label", null) ?: break
+            val lat =
+                    recentPrefs.getString("${PREF_RECENT_PREFIX}${i}_lat", null)?.toDoubleOrNull()
+                            ?: break
+            val lon =
+                    recentPrefs.getString("${PREF_RECENT_PREFIX}${i}_lon", null)?.toDoubleOrNull()
+                            ?: break
+            list.add(GeocodeSuggestion(label = label, lat = lat, lon = lon))
+        }
+        return list
+    }
+
+    private fun saveRecentSearches(list: List<GeocodeSuggestion>) {
+        recentPrefs.edit().apply {
+            for (i in 0 until MAX_RECENT) {
+                if (i < list.size) {
+                    putString("${PREF_RECENT_PREFIX}${i}_label", list[i].label)
+                    putString("${PREF_RECENT_PREFIX}${i}_lat", list[i].lat.toString())
+                    putString("${PREF_RECENT_PREFIX}${i}_lon", list[i].lon.toString())
+                } else {
+                    remove("${PREF_RECENT_PREFIX}${i}_label")
+                    remove("${PREF_RECENT_PREFIX}${i}_lat")
+                    remove("${PREF_RECENT_PREFIX}${i}_lon")
+                }
+            }
+            apply()
+        }
+    }
+
+    private fun addToRecentSearches(suggestion: GeocodeSuggestion) {
+        val current = _ui.value.recentSearches
+        val updated =
+                listOf(suggestion) +
+                        current.filter { it.label != suggestion.label }.take(MAX_RECENT - 1)
+        val newList = updated.take(MAX_RECENT)
+        saveRecentSearches(newList)
+        _ui.value = _ui.value.copy(recentSearches = newList)
     }
 
     // ── Callbacks del mapa ────────────────────────────────────────────
@@ -293,12 +349,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ── Map loop ──────────────────────────────────────────────────────
-    // Envía un frame vectorial (calles + ruta + posición) al ESP32 cada 1 segundo.
-    // Las calles se obtienen de Overpass API con caché; la ruta viene de OSRM.
+    // Envía un frame vectorial (calles + ruta + posición) al ESP32 cada 500 ms (2 Hz).
+    // El ESP32 solo renderiza el último frame recibido; más frecuencia = más fluido sin cola.
     private fun startMapLoop() {
         mapJob?.cancel()
         roadsJob?.cancel()
-        Log.i(TAG, "startMapLoop: enviando frames vectoriales cada 1 s → ESP32")
+        Log.i(TAG, "startMapLoop: enviando frames vectoriales cada 500 ms → ESP32")
         mapJob =
                 viewModelScope.launch {
                     while (true) {
@@ -427,7 +483,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                                 Log.d(TAG, "vec frame: ${json.length} chars")
                             }
                         }
-                        delay(1_000L)
+                        delay(500L)
                     }
                 }
     }
@@ -440,6 +496,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun centerOnLocation() {
+        lastLocation?.let { loc -> setCenterCallback?.invoke(loc.latitude, loc.longitude) }
         enableFollowCallback?.invoke()
     }
 
@@ -468,6 +525,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Paso 2: el usuario eligió una sugerencia → calcular ruta. */
     fun routeToSuggestion(suggestion: GeocodeSuggestion) {
+        addToRecentSearches(suggestion)
         val origin =
                 lastLocation
                         ?: run {
