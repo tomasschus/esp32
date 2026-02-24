@@ -1,12 +1,31 @@
-import { Injectable, HttpException } from '@nestjs/common';
+import { HttpException, Injectable } from '@nestjs/common';
 import type {
-  GraphHopperGeocodeResponse,
   GeocodedHit,
+  GraphHopperGeocodeResponse,
   GraphHopperHit,
 } from '../types/geocode';
 
 const GRAPHHOPPER_API_KEY =
   process.env.GRAPHHOPPER_API_KEY ?? '0086de71-3a18-474a-a401-139651689d1f';
+
+/** Distancia aproximada en metros (Haversine). Usado solo para ordenar por cercanía. */
+function distanceMeters(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number,
+): number {
+  const R = 6371000; // radio Tierra en m
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+    Math.cos((lat2 * Math.PI) / 180) *
+    Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
 
 function buildLabel(hit: GraphHopperHit): string {
   const parts: string[] = [];
@@ -56,7 +75,7 @@ export class GeocodeService {
 
     const data: GraphHopperGeocodeResponse = await response.json();
 
-    const hits: GeocodedHit[] = data.hits.map((hit) => ({
+    let hits: GeocodedHit[] = data.hits.map((hit) => ({
       label: buildLabel(hit),
       lat: hit.point.lat,
       lon: hit.point.lng,
@@ -71,6 +90,19 @@ export class GeocodeService {
       osm_id: hit.osm_id,
       osm_type: hit.osm_type,
     }));
+
+    // Priorizar por cercanía a la ubicación del usuario (estilo Google Maps).
+    if (lat != null && lon != null) {
+      const userLat = parseFloat(lat);
+      const userLon = parseFloat(lon);
+      if (!Number.isNaN(userLat) && !Number.isNaN(userLon)) {
+        hits = [...hits].sort(
+          (a, b) =>
+            distanceMeters(userLat, userLon, a.lat, a.lon) -
+            distanceMeters(userLat, userLon, b.lat, b.lon),
+        );
+      }
+    }
 
     return { hits };
   }
