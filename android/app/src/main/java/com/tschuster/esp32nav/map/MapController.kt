@@ -10,6 +10,7 @@ import android.graphics.drawable.BitmapDrawable
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.MotionEvent
 import java.io.ByteArrayOutputStream
 import java.io.File
 import org.osmdroid.config.Configuration
@@ -20,7 +21,9 @@ import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Overlay
 import org.osmdroid.views.overlay.Polyline
+import org.osmdroid.views.overlay.gestures.RotationGestureOverlay
 import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider
 import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay
 
@@ -33,6 +36,7 @@ private const val TAG = "ESP32Nav/Map"
  * - Sigue automáticamente la ubicación (modo seguimiento).
  * - El seguimiento se pausa si el usuario hace pan manual; se reactiva con [enableFollow].
  * - [captureJpeg] dibuja el mapa a un Bitmap 480×320 para enviar al ESP32.
+ * - Tap en el mapa: [setOnMapTap] para marcar destino y navegar ahí.
  */
 class MapController(context: Context) {
 
@@ -42,6 +46,9 @@ class MapController(context: Context) {
     private var destMarker: Marker? = null
     private var following = true
     private var navMode = false
+
+    /** Se invoca con (lat, lon) cuando el usuario hace tap en el mapa para marcar destino. */
+    var onMapTap: ((Double, Double) -> Unit)? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var reEnableFollowRunnable: Runnable = Runnable {}
@@ -79,6 +86,9 @@ class MapController(context: Context) {
                 }
         mapView.overlays.add(locationOverlay)
 
+        // Rotación con dos dedos
+        mapView.overlays.add(RotationGestureOverlay(mapView))
+
         reEnableFollowRunnable = Runnable {
             if (navMode) {
                 locationOverlay.enableFollowLocation()
@@ -106,6 +116,20 @@ class MapController(context: Context) {
                     override fun onZoom(event: ZoomEvent): Boolean = false
                 }
         )
+
+        // Tap en el mapa → marcar destino (navegar a ese punto).
+        mapView.overlays.add(
+                @Suppress("DEPRECATION")
+                object : Overlay(context) {
+                    override fun onSingleTapConfirmed(e: MotionEvent, mapView: MapView): Boolean {
+                        val proj = mapView.projection ?: return false
+                        val geo = proj.fromPixels(e.x.toInt(), e.y.toInt()) ?: return false
+                        onMapTap?.invoke(geo.latitude, geo.longitude)
+                        Log.d(TAG, "map tap → %.5f, %.5f".format(geo.latitude, geo.longitude))
+                        return true
+                    }
+                }
+        )
     }
 
     /** Centra el mapa con animación (primera ubicación, botón "ir a mi ubicación"). */
@@ -128,9 +152,8 @@ class MapController(context: Context) {
     }
 
     /**
-     * Activa/desactiva el modo navegación.
-     * Activado: zoom 17, seguimiento forzado, mapa se rota con el heading del usuario.
-     * Desactivado: mapa vuelve a orientación norte-arriba.
+     * Activa/desactiva el modo navegación. Activado: zoom 17, seguimiento forzado, mapa se rota con
+     * el heading del usuario. Desactivado: mapa vuelve a orientación norte-arriba.
      */
     fun setNavMode(enabled: Boolean) {
         navMode = enabled
@@ -147,8 +170,8 @@ class MapController(context: Context) {
     }
 
     /**
-     * Rota el mapa para que el heading del usuario quede hacia arriba.
-     * Solo tiene efecto en nav mode.
+     * Rota el mapa para que el heading del usuario quede hacia arriba. Solo tiene efecto en nav
+     * mode.
      */
     fun updateBearing(bearing: Float) {
         if (!navMode) return
@@ -162,20 +185,22 @@ class MapController(context: Context) {
         destMarker?.let { mapView.overlays.remove(it) }
         destMarker = null
         if (points.isNotEmpty()) {
-            routeOverlay = Polyline().apply {
-                setPoints(points.map { (lat, lon) -> GeoPoint(lat, lon) })
-                outlinePaint.color = Color.rgb(0x44, 0x88, 0xFF)
-                outlinePaint.strokeWidth = 8f
-            }
+            routeOverlay =
+                    Polyline().apply {
+                        setPoints(points.map { (lat, lon) -> GeoPoint(lat, lon) })
+                        outlinePaint.color = Color.rgb(0x44, 0x88, 0xFF)
+                        outlinePaint.strokeWidth = 8f
+                    }
             // Ruta detrás, ícono de destino encima de la ruta pero debajo del marcador de usuario
             mapView.overlays.add(0, routeOverlay)
             val dest = points.last()
-            destMarker = Marker(mapView).apply {
-                position = GeoPoint(dest.first, dest.second)
-                icon = makeDestIcon()
-                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                setInfoWindow(null) // sin popup al tocar
-            }
+            destMarker =
+                    Marker(mapView).apply {
+                        position = GeoPoint(dest.first, dest.second)
+                        icon = makeDestIcon()
+                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                        setInfoWindow(null) // sin popup al tocar
+                    }
             mapView.overlays.add(1, destMarker!!)
         }
         mapView.invalidate()
@@ -264,13 +289,13 @@ class MapController(context: Context) {
     }
 
     /**
-     * Ícono de destino: pin rojo con borde blanco y punta hacia abajo.
-     * El anchor del Marker se coloca en el centro-bottom del bitmap (la punta del pin).
+     * Ícono de destino: pin rojo con borde blanco y punta hacia abajo. El anchor del Marker se
+     * coloca en el centro-bottom del bitmap (la punta del pin).
      */
     private fun makeDestIcon(): BitmapDrawable {
         val ctx = mapView.context
         val density = ctx.resources.displayMetrics.density
-        val r = (13 * density).toInt().coerceAtLeast(13)  // radio del círculo
+        val r = (13 * density).toInt().coerceAtLeast(13) // radio del círculo
         val tailH = (11 * density).toInt().coerceAtLeast(11) // altura de la punta
         val w = r * 2
         val h = r * 2 + tailH

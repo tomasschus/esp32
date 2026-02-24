@@ -523,6 +523,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
     }
 
+    /** Navegar a un punto del mapa (tap en el mapa). */
+    fun routeToMapPoint(lat: Double, lon: Double) {
+        routeToSuggestion(GeocodeSuggestion(label = "Destino en el mapa", lat = lat, lon = lon))
+    }
+
     /** Paso 2: el usuario eligió una sugerencia → calcular ruta. */
     fun routeToSuggestion(suggestion: GeocodeSuggestion) {
         addToRecentSearches(suggestion)

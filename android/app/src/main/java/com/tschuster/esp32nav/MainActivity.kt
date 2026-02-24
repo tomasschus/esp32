@@ -125,6 +125,7 @@ class MainActivity : ComponentActivity() {
                         setNavMode = { enabled -> mapController.setNavMode(enabled) },
                         updateBearing = { bearing -> mapController.updateBearing(bearing) },
                 )
+                mapController.onMapTap = { lat, lon -> vm.routeToMapPoint(lat, lon) }
             }
 
             ESP32NavTheme {
