@@ -95,7 +95,9 @@ class Esp32Client {
 
     // ── Enviar GPS ───────────────────────────────────────────────
     fun sendGps(lat: Double, lon: Double, speedKmh: Int = 0) {
-        ws?.send("""{"t":"gps","lat":${"%.6f".format(lat)},"lon":${"%.6f".format(lon)},"spd":$speedKmh}""")
+        ws?.send(
+                """{"t":"gps","lat":${"%.6f".format(lat)},"lon":${"%.6f".format(lon)},"spd":$speedKmh}"""
+        )
     }
 
     // ── Enviar tile de mapa (JPEG) ───────────────────────────────
@@ -127,7 +129,13 @@ class Esp32Client {
     // ── Enviar paso de navegación ────────────────────────────────
     fun sendNavStep(step: String, distanceM: Int, etaMin: Int) {
         val safeStep = step.replace("\"", "'")
-        ws?.send("""{"t":"nav","step":"$safeStep","dist":"${distanceM}m","eta":"$etaMin min"}""")
+        val distStr =
+                if (distanceM >= 1000) {
+                    "%.1f km".format(distanceM / 1000.0)
+                } else {
+                    "$distanceM m"
+                }
+        ws?.send("""{"t":"nav","step":"$safeStep","dist":"$distStr","eta":"$etaMin min"}""")
     }
 
     fun sendNavArrived() {

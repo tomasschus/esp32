@@ -20,37 +20,38 @@
 #include <esp_heap_caps.h>
 #include <lvgl.h>
 
-#define COLOR_BG       lv_color_hex(0x1C1C2E)
-#define COLOR_ROAD_1   lv_color_hex(0x3A3A5A)   /* calle menor */
-#define COLOR_ROAD_2   lv_color_hex(0x555580)   /* calle secundaria */
-#define COLOR_ROAD_3   lv_color_hex(0x7777AA)   /* autopista */
-#define COLOR_ROUTE    lv_color_hex(0x4488FF)   /* ruta activa */
-#define COLOR_POS_OUT  lv_color_hex(0xFFFFFF)   /* borde del marcador */
-#define COLOR_POS_IN   lv_color_hex(0x4488FF)   /* centro del marcador */
-#define COLOR_BTN_BG   lv_color_hex(0x1A1A2E)
-#define COLOR_ACCENT   lv_color_hex(0xE94560)
-#define COLOR_TEXT     lv_color_hex(0xEEEEEE)
-#define COLOR_NAV_BG   lv_color_hex(0x12122A)
+#define COLOR_BG lv_color_hex(0x1C1C2E)
+#define COLOR_ROAD_1 lv_color_hex(0x3A3A5A)  /* calle menor */
+#define COLOR_ROAD_2 lv_color_hex(0x555580)  /* calle secundaria */
+#define COLOR_ROAD_3 lv_color_hex(0x7777AA)  /* autopista */
+#define COLOR_ROUTE lv_color_hex(0x4488FF)   /* ruta activa */
+#define COLOR_POS_OUT lv_color_hex(0xFFFFFF) /* borde del marcador */
+#define COLOR_POS_IN lv_color_hex(0x4488FF)  /* centro del marcador */
+#define COLOR_BTN_BG lv_color_hex(0x1A1A2E)
+#define COLOR_ACCENT lv_color_hex(0xE94560)
+#define COLOR_TEXT lv_color_hex(0xEEEEEE)
+#define COLOR_NAV_BG lv_color_hex(0x12122A)
 
-static lv_obj_t  *scr         = nullptr;
-static lv_obj_t  *canvas      = nullptr;
-static lv_obj_t  *lbl_waiting = nullptr;
-static lv_obj_t  *lbl_nav     = nullptr;  /* instrucción actual */
-static lv_obj_t  *lbl_dist    = nullptr;  /* distancia al próximo giro */
-static lv_obj_t  *lbl_spd     = nullptr;  /* velocidad GPS */
-static lv_obj_t  *spd_circle  = nullptr;  /* contenedor del círculo */
-static uint16_t  *s_map_buf   = nullptr;
+static lv_obj_t *scr = nullptr;
+static lv_obj_t *canvas = nullptr;
+static lv_obj_t *lbl_waiting = nullptr;
+static lv_obj_t *lbl_nav = nullptr;    /* instrucción actual */
+static lv_obj_t *lbl_dist = nullptr;   /* distancia al próximo giro */
+static lv_obj_t *lbl_eta = nullptr;    /* ETA al destino */
+static lv_obj_t *lbl_spd = nullptr;    /* velocidad GPS */
+static lv_obj_t *spd_circle = nullptr; /* contenedor del círculo */
+static uint16_t *s_map_buf = nullptr;
 
-static volatile bool     s_vec_dirty = false;
-static volatile bool     s_nav_dirty = false;
-static volatile bool     s_spd_dirty = false;
-static volatile bool     s_has_received_frame = false;
-static volatile int      s_pending_spd = 0;
-static lv_timer_t       *s_dirty_timer = nullptr;
+static volatile bool s_vec_dirty = false;
+static volatile bool s_nav_dirty = false;
+static volatile bool s_spd_dirty = false;
+static volatile bool s_has_received_frame = false;
+static volatile int s_pending_spd = 0;
+static lv_timer_t *s_dirty_timer = nullptr;
 
 /* Copias seguras para acceso desde el timer (hilo LVGL) – en PSRAM */
 static vec_frame_t *s_pending_vec = nullptr;
-static nav_step_t   s_pending_nav;
+static nav_step_t s_pending_nav;
 
 /* ── Callbacks del WebSocket (ISR context) ───────────────────────── */
 static void on_map_frame(void) {
@@ -58,7 +59,8 @@ static void on_map_frame(void) {
 }
 
 static void on_vec_frame(const vec_frame_t &f) {
-  if (!s_pending_vec) return;
+  if (!s_pending_vec)
+    return;
   memcpy(s_pending_vec, &f, sizeof(vec_frame_t));
   s_has_received_frame = true;
   s_vec_dirty = true;
@@ -71,12 +73,13 @@ static void on_nav_step(const nav_step_t &n) {
 
 static void on_gps_speed(int speed_kmh) {
   s_pending_spd = speed_kmh;
-  s_spd_dirty   = true;
+  s_spd_dirty = true;
 }
 
 /* ── Dibujo del frame vectorial sobre el canvas ──────────────────── */
 static void render_vec_frame(const vec_frame_t &f) {
-  if (!canvas) return;
+  if (!canvas)
+    return;
 
   lv_canvas_fill_bg(canvas, COLOR_BG, LV_OPA_COVER);
 
@@ -92,9 +95,18 @@ static void render_vec_frame(const vec_frame_t &f) {
   for (uint8_t i = 0; i < f.n_roads; i++) {
     const vec_road_t &r = f.roads[i];
     switch (r.w) {
-      case 3:  road_dsc.color = COLOR_ROAD_3; road_dsc.width = 8; break;
-      case 2:  road_dsc.color = COLOR_ROAD_2; road_dsc.width = 5; break;
-      default: road_dsc.color = COLOR_ROAD_1; road_dsc.width = 3; break;
+    case 3:
+      road_dsc.color = COLOR_ROAD_3;
+      road_dsc.width = 8;
+      break;
+    case 2:
+      road_dsc.color = COLOR_ROAD_2;
+      road_dsc.width = 5;
+      break;
+    default:
+      road_dsc.color = COLOR_ROAD_1;
+      road_dsc.width = 3;
+      break;
     }
     for (uint8_t j = 0; j + 1 < r.n; j++) {
       road_dsc.p1.x = r.pts[j].x;
@@ -109,11 +121,11 @@ static void render_vec_frame(const vec_frame_t &f) {
   if (f.n_route >= 2) {
     lv_draw_line_dsc_t rte_dsc;
     lv_draw_line_dsc_init(&rte_dsc);
-    rte_dsc.color       = COLOR_ROUTE;
-    rte_dsc.width       = 5;
-    rte_dsc.opa         = LV_OPA_COVER;
+    rte_dsc.color = COLOR_ROUTE;
+    rte_dsc.width = 5;
+    rte_dsc.opa = LV_OPA_COVER;
     rte_dsc.round_start = 1;
-    rte_dsc.round_end   = 1;
+    rte_dsc.round_end = 1;
     for (uint16_t j = 0; j + 1 < f.n_route; j++) {
       rte_dsc.p1.x = f.route[j].x;
       rte_dsc.p1.y = f.route[j].y;
@@ -127,17 +139,17 @@ static void render_vec_frame(const vec_frame_t &f) {
   if (f.n_labels > 0) {
     lv_draw_label_dsc_t lbl_dsc;
     lv_draw_label_dsc_init(&lbl_dsc);
-    lbl_dsc.font  = &lv_font_montserrat_12;
-    lbl_dsc.opa   = LV_OPA_COVER;
+    lbl_dsc.font = &lv_font_montserrat_12;
+    lbl_dsc.opa = LV_OPA_COVER;
     lbl_dsc.align = LV_TEXT_ALIGN_CENTER;
     for (uint8_t i = 0; i < f.n_labels; i++) {
       int32_t lx = f.labels[i].x;
       int32_t ly = f.labels[i].y;
-      lv_area_t area = { lx - 55, ly - 8, lx + 55, ly + 8 };
+      lv_area_t area = {lx - 55, ly - 8, lx + 55, ly + 8};
       /* Sombra oscura desplazada 1 px para legibilidad */
-      lv_area_t shadow = { area.x1 + 1, area.y1 + 1, area.x2 + 1, area.y2 + 1 };
+      lv_area_t shadow = {area.x1 + 1, area.y1 + 1, area.x2 + 1, area.y2 + 1};
       lbl_dsc.color = lv_color_hex(0x000000);
-      lbl_dsc.text  = f.labels[i].name;
+      lbl_dsc.text = f.labels[i].name;
       lv_draw_label(&layer, &lbl_dsc, &shadow);
       /* Texto blanco */
       lbl_dsc.color = lv_color_white();
@@ -148,20 +160,20 @@ static void render_vec_frame(const vec_frame_t &f) {
   /* Marcador de posición: círculo blanco (radio 8) + punto azul (radio 5) */
   lv_draw_arc_dsc_t arc;
   lv_draw_arc_dsc_init(&arc);
-  arc.center.x   = f.pos_x;
-  arc.center.y   = f.pos_y;
+  arc.center.x = f.pos_x;
+  arc.center.y = f.pos_y;
   arc.start_angle = 0;
-  arc.end_angle   = 360;
-  arc.opa         = LV_OPA_COVER;
+  arc.end_angle = 360;
+  arc.opa = LV_OPA_COVER;
 
-  arc.color  = COLOR_POS_OUT;
+  arc.color = COLOR_POS_OUT;
   arc.radius = 8;
-  arc.width  = 8;
+  arc.width = 8;
   lv_draw_arc(&layer, &arc);
 
-  arc.color  = COLOR_POS_IN;
+  arc.color = COLOR_POS_IN;
   arc.radius = 5;
-  arc.width  = 5;
+  arc.width = 5;
   lv_draw_arc(&layer, &arc);
 
   lv_canvas_finish_layer(canvas, &layer);
@@ -184,18 +196,23 @@ static void dirty_timer_cb(lv_timer_t *t) {
     lv_obj_invalidate(canvas);
   }
 
-  /* Actualizar label de navegación */
-  if (s_nav_dirty && lbl_nav && lbl_dist) {
+  /* Actualizar label de navegación (instrucción, distancia al giro, ETA) */
+  if (s_nav_dirty && lbl_nav && lbl_dist && lbl_eta) {
     s_nav_dirty = false;
-    lv_label_set_text(lbl_nav,  s_pending_nav.step);
+    lv_label_set_text(lbl_nav, s_pending_nav.step);
     lv_label_set_text(lbl_dist, s_pending_nav.dist);
-    lv_obj_clear_flag(lv_obj_get_parent(lbl_nav), LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(lbl_eta, s_pending_nav.eta);
+    lv_obj_t *nav_panel = lv_obj_get_parent(lbl_nav);
+    if (std::strcmp(s_pending_nav.step, "Sin navegación") == 0)
+      lv_obj_add_flag(nav_panel, LV_OBJ_FLAG_HIDDEN);
+    else
+      lv_obj_clear_flag(nav_panel, LV_OBJ_FLAG_HIDDEN);
   }
 
   /* Mostrar/ocultar círculo de velocidad según conexión */
   if (spd_circle) {
     bool connected = maps_ws_has_client();
-    bool hidden    = lv_obj_has_flag(spd_circle, LV_OBJ_FLAG_HIDDEN);
+    bool hidden = lv_obj_has_flag(spd_circle, LV_OBJ_FLAG_HIDDEN);
     if (connected && hidden)
       lv_obj_clear_flag(spd_circle, LV_OBJ_FLAG_HIDDEN);
     else if (!connected && !hidden)
@@ -233,8 +250,7 @@ void screen_map_create(void) {
 
     /* Canvas fullscreen que usa el mismo buffer RGB565 */
     canvas = lv_canvas_create(scr);
-    lv_canvas_set_buffer(canvas, s_map_buf,
-                         MAPS_WS_MAP_W, MAPS_WS_MAP_H,
+    lv_canvas_set_buffer(canvas, s_map_buf, MAPS_WS_MAP_W, MAPS_WS_MAP_H,
                          LV_COLOR_FORMAT_RGB565);
     lv_obj_set_size(canvas, MAPS_WS_MAP_W, MAPS_WS_MAP_H);
     lv_obj_align(canvas, LV_ALIGN_TOP_LEFT, 0, 0);
@@ -244,9 +260,8 @@ void screen_map_create(void) {
 
     /* Label de espera */
     lbl_waiting = lv_label_create(scr);
-    lv_label_set_text(lbl_waiting,
-                      "Conecta a WiFi ESP32-NAV\n"
-                      "y abre la app para ver el mapa.");
+    lv_label_set_text(lbl_waiting, "Conecta a WiFi ESP32-NAV\n"
+                                   "y abre la app para ver el mapa.");
     lv_obj_set_style_text_font(lbl_waiting, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(lbl_waiting, lv_color_hex(0x778899), 0);
     lv_obj_set_style_text_align(lbl_waiting, LV_TEXT_ALIGN_CENTER, 0);
@@ -262,7 +277,8 @@ void screen_map_create(void) {
     lv_obj_set_style_radius(nav_panel, 0, 0);
     lv_obj_set_style_pad_all(nav_panel, 6, 0);
     lv_obj_clear_flag(nav_panel, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(nav_panel, LV_OBJ_FLAG_HIDDEN);  /* oculto hasta que haya nav */
+    lv_obj_add_flag(nav_panel,
+                    LV_OBJ_FLAG_HIDDEN); /* oculto hasta que haya nav */
 
     lbl_nav = lv_label_create(nav_panel);
     lv_label_set_text(lbl_nav, "");
@@ -274,9 +290,15 @@ void screen_map_create(void) {
 
     lbl_dist = lv_label_create(nav_panel);
     lv_label_set_text(lbl_dist, "");
-    lv_obj_set_style_text_font(lbl_dist, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl_dist, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_dist, COLOR_ACCENT, 0);
     lv_obj_align(lbl_dist, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+
+    lbl_eta = lv_label_create(nav_panel);
+    lv_label_set_text(lbl_eta, "");
+    lv_obj_set_style_text_font(lbl_eta, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl_eta, lv_color_hex(0x4DCC88), 0);
+    lv_obj_align(lbl_eta, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
   } else {
     lv_obj_t *err = lv_label_create(scr);
     lv_label_set_text(err, "Sin memoria para mapa");
@@ -307,10 +329,11 @@ void screen_map_create(void) {
   lv_obj_set_style_text_color(lbl_back, COLOR_TEXT, 0);
   lv_obj_center(lbl_back);
 
-  /* ── Círculo de velocidad (esquina inferior derecha) ────────── */
+  /* ── Círculo de velocidad (arriba del panel de indicaciones) ────────── */
   spd_circle = lv_obj_create(scr);
   lv_obj_set_size(spd_circle, 64, 64);
-  lv_obj_align(spd_circle, LV_ALIGN_BOTTOM_RIGHT, -8, -8);
+  lv_obj_align(spd_circle, LV_ALIGN_BOTTOM_RIGHT, -8,
+               -82); /* 70 px panel + 8 px margen */
   lv_obj_set_style_bg_color(spd_circle, lv_color_white(), 0);
   lv_obj_set_style_bg_opa(spd_circle, LV_OPA_90, 0);
   lv_obj_set_style_radius(spd_circle, LV_RADIUS_CIRCLE, 0);
@@ -347,8 +370,8 @@ void screen_map_start(void) {
     lv_obj_set_size(canvas, MAPS_WS_MAP_W, MAPS_WS_MAP_H);
 
   s_has_received_frame = false;
-  s_vec_dirty          = false;
-  s_nav_dirty          = false;
+  s_vec_dirty = false;
+  s_nav_dirty = false;
   if (lbl_waiting)
     lv_obj_clear_flag(lbl_waiting, LV_OBJ_FLAG_HIDDEN);
   if (s_map_buf) {
@@ -357,6 +380,4 @@ void screen_map_start(void) {
   }
 }
 
-void screen_map_stop(void) {
-  maps_ws_stop();
-}
+void screen_map_stop(void) { maps_ws_stop(); }

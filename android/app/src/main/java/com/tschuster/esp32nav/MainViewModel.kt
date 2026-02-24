@@ -18,7 +18,6 @@ import com.tschuster.esp32nav.util.VectorRenderer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,6 +26,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private const val TAG = "ESP32Nav/VM"
 
@@ -66,6 +66,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var autoReconnectJob: Job? = null
     private var suggestionsJob: Job? = null
     private var stepIdx = 0
+    private var arrivedClearJob: Job? = null
 
     // Callbacks registrados por la UI para controlar el MapView (Android)
     private var enableFollowCallback: (() -> Unit)? = null
@@ -85,12 +86,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── Callbacks del mapa ────────────────────────────────────────────
     /**
-     * Registrado desde la Activity una vez que el MapView está listo.
-     * [enableFollow]  → reactiva el seguimiento automático de ubicación.
-     * [setCenter]     → centra el mapa en una coordenada.
-     * [setZoom]       → cambia el zoom del mapa.
-     * [setRoute]      → dibuja la ruta como polilínea en el mapa Android.
-     * [setNavMode]    → activa/desactiva modo navegación (seguimiento + rotación).
+     * Registrado desde la Activity una vez que el MapView está listo. [enableFollow] → reactiva el
+     * seguimiento automático de ubicación. [setCenter] → centra el mapa en una coordenada.
+     * [setZoom] → cambia el zoom del mapa. [setRoute] → dibuja la ruta como polilínea en el mapa
+     * Android. [setNavMode] → activa/desactiva modo navegación (seguimiento + rotación).
      * [updateBearing] → rota el mapa según el heading del usuario.
      */
     fun registerMapCallbacks(
@@ -150,9 +149,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         _ui.value =
                                 _ui.value.copy(
                                         isConnecting = false,
-                                        status = if (autoReconnecting) "Buscando ESP32…" else "Desconectado",
-                                        errorMsg = if (autoReconnecting) null
-                                        else "No se pudo conectar. ¿Aprobaste el diálogo del sistema? Verificá que el ESP32 esté encendido.",
+                                        status =
+                                                if (autoReconnecting) "Buscando ESP32…"
+                                                else "Desconectado",
+                                        errorMsg =
+                                                if (autoReconnecting) null
+                                                else
+                                                        "No se pudo conectar. ¿Aprobaste el diálogo del sistema? Verificá que el ESP32 esté encendido.",
                                 )
                     }
                 }
@@ -211,15 +214,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun startNavService() {
         ContextCompat.startForegroundService(
-            getApplication(),
-            Intent(getApplication(), NavigationService::class.java)
+                getApplication(),
+                Intent(getApplication(), NavigationService::class.java)
         )
     }
 
     private fun stopNavService() {
-        getApplication<Application>().stopService(
-            Intent(getApplication(), NavigationService::class.java)
-        )
+        getApplication<Application>()
+                .stopService(Intent(getApplication(), NavigationService::class.java))
     }
 
     // ── Location ──────────────────────────────────────────────────────
@@ -276,8 +278,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         if (_ui.value.isConnected) break
                         val ws = networkManager.wifiState.value
                         if (ws == NetworkManager.WifiState.IDLE ||
-                                        ws == NetworkManager.WifiState.UNAVAILABLE) {
-                            Log.i(TAG, "autoReconnect: intentando reconectar a '$ssid' (próximo delay=${delaySec}s)")
+                                        ws == NetworkManager.WifiState.UNAVAILABLE
+                        ) {
+                            Log.i(
+                                    TAG,
+                                    "autoReconnect: intentando reconectar a '$ssid' (próximo delay=${delaySec}s)"
+                            )
                             _ui.value = _ui.value.copy(status = "Buscando ESP32…", errorMsg = null)
                             networkManager.connectToEsp32(ssid)
                             if (delaySec < 15L) delaySec += 5L
@@ -293,71 +299,137 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         mapJob?.cancel()
         roadsJob?.cancel()
         Log.i(TAG, "startMapLoop: enviando frames vectoriales cada 1 s → ESP32")
-        mapJob = viewModelScope.launch {
-            while (true) {
-                if (_ui.value.isConnected) {
-                    val loc = lastLocation
-                    if (loc != null) {
-                        val zoom = _ui.value.zoom.toDouble()
+        mapJob =
+                viewModelScope.launch {
+                    while (true) {
+                        if (_ui.value.isConnected) {
+                            val loc = lastLocation
+                            if (loc != null) {
+                                val zoom = _ui.value.zoom.toDouble()
 
-                        // Disparar consulta Overpass en background si es necesario y no hay una en curso
-                        if (vectorFetcher.needsRefresh(loc.latitude, loc.longitude) &&
-                                roadsJob?.isActive != true) {
-                            roadsJob = viewModelScope.launch(Dispatchers.IO) {
-                                vectorFetcher.fetchAndCache(loc.latitude, loc.longitude)
-                            }
-                        }
-
-                        // Toda la geometría en Default para no bloquear el hilo principal
-                        val routeGeometry = _ui.value.route?.geometry
-                        val json = withContext(Dispatchers.Default) {
-                            val roads = vectorFetcher.getCachedRoads(zoom, loc.latitude, loc.longitude)
-
-                            val routePx = routeGeometry?.map { (lat, lon) ->
-                                VectorRenderer.latLonToPixel(lat, lon, loc.latitude, loc.longitude, zoom)
-                            }?.let { VectorRenderer.simplify(it, 1.5) } ?: emptyList()
-
-                            val bearing = if (loc.hasBearing()) loc.bearing else -1f
-                            val heading = bearing.toInt()
-                            val cx = VectorRenderer.SCREEN_W / 2
-                            val cy = VectorRenderer.POS_Y
-
-                            val rotatedRoads = if (bearing >= 0f) roads.map { seg ->
-                                VectorRenderer.RoadSegment(
-                                    VectorRenderer.rotatePoints(seg.pixels, bearing, cx, cy),
-                                    seg.width,
-                                    seg.name
-                                )
-                            } else roads
-                            val rotatedRoute = if (bearing >= 0f)
-                                VectorRenderer.rotatePoints(routePx, bearing, cx, cy)
-                            else routePx
-
-                            val labels = buildList<VectorRenderer.StreetLabel> {
-                                val seen = mutableSetOf<String>()
-                                rotatedRoads
-                                    .filter { it.name.isNotBlank() }
-                                    .sortedByDescending { it.width }
-                                    .forEach { seg ->
-                                        if (seg.name !in seen && size < 20) {
-                                            val mid = seg.pixels.getOrNull(seg.pixels.size / 2) ?: return@forEach
-                                            if (mid.first in -10..330 && mid.second in -10..490) {
-                                                seen.add(seg.name)
-                                                add(VectorRenderer.StreetLabel(mid.first, mid.second, seg.name))
+                                // Disparar consulta Overpass en background si es necesario y no hay
+                                // una en curso
+                                if (vectorFetcher.needsRefresh(loc.latitude, loc.longitude) &&
+                                                roadsJob?.isActive != true
+                                ) {
+                                    roadsJob =
+                                            viewModelScope.launch(Dispatchers.IO) {
+                                                vectorFetcher.fetchAndCache(
+                                                        loc.latitude,
+                                                        loc.longitude
+                                                )
                                             }
-                                        }
-                                    }
-                            }
+                                }
 
-                            VectorRenderer.buildFrame(rotatedRoads, rotatedRoute, labels, cx, cy, heading)
+                                // Toda la geometría en Default para no bloquear el hilo principal
+                                val routeGeometry = _ui.value.route?.geometry
+                                val json =
+                                        withContext(Dispatchers.Default) {
+                                            val roads =
+                                                    vectorFetcher.getCachedRoads(
+                                                            zoom,
+                                                            loc.latitude,
+                                                            loc.longitude
+                                                    )
+
+                                            val routePx =
+                                                    routeGeometry
+                                                            ?.map { (lat, lon) ->
+                                                                VectorRenderer.latLonToPixel(
+                                                                        lat,
+                                                                        lon,
+                                                                        loc.latitude,
+                                                                        loc.longitude,
+                                                                        zoom
+                                                                )
+                                                            }
+                                                            ?.let {
+                                                                VectorRenderer.simplify(it, 1.5)
+                                                            }
+                                                            ?: emptyList()
+
+                                            val bearing = if (loc.hasBearing()) loc.bearing else -1f
+                                            val heading = bearing.toInt()
+                                            val cx = VectorRenderer.SCREEN_W / 2
+                                            val cy = VectorRenderer.POS_Y
+
+                                            val rotatedRoads =
+                                                    if (bearing >= 0f)
+                                                            roads.map { seg ->
+                                                                VectorRenderer.RoadSegment(
+                                                                        VectorRenderer.rotatePoints(
+                                                                                seg.pixels,
+                                                                                bearing,
+                                                                                cx,
+                                                                                cy
+                                                                        ),
+                                                                        seg.width,
+                                                                        seg.name
+                                                                )
+                                                            }
+                                                    else roads
+                                            val rotatedRoute =
+                                                    if (bearing >= 0f)
+                                                            VectorRenderer.rotatePoints(
+                                                                    routePx,
+                                                                    bearing,
+                                                                    cx,
+                                                                    cy
+                                                            )
+                                                    else routePx
+
+                                            val labels =
+                                                    buildList<VectorRenderer.StreetLabel> {
+                                                        val seen = mutableSetOf<String>()
+                                                        rotatedRoads
+                                                                .filter { it.name.isNotBlank() }
+                                                                .sortedByDescending { it.width }
+                                                                .forEach { seg ->
+                                                                    if (seg.name !in seen &&
+                                                                                    size < 20
+                                                                    ) {
+                                                                        val mid =
+                                                                                seg.pixels
+                                                                                        .getOrNull(
+                                                                                                seg.pixels
+                                                                                                        .size /
+                                                                                                        2
+                                                                                        )
+                                                                                        ?: return@forEach
+                                                                        if (mid.first in -10..330 &&
+                                                                                        mid.second in
+                                                                                                -10..490
+                                                                        ) {
+                                                                            seen.add(seg.name)
+                                                                            add(
+                                                                                    VectorRenderer
+                                                                                            .StreetLabel(
+                                                                                                    mid.first,
+                                                                                                    mid.second,
+                                                                                                    seg.name
+                                                                                            )
+                                                                            )
+                                                                        }
+                                                                    }
+                                                                }
+                                                    }
+
+                                            VectorRenderer.buildFrame(
+                                                    rotatedRoads,
+                                                    rotatedRoute,
+                                                    labels,
+                                                    cx,
+                                                    cy,
+                                                    heading
+                                            )
+                                        }
+                                esp32Client.sendVectorFrame(json)
+                                Log.d(TAG, "vec frame: ${json.length} chars")
+                            }
                         }
-                        esp32Client.sendVectorFrame(json)
-                        Log.d(TAG, "vec frame: ${json.length} chars")
+                        delay(1_000L)
                     }
                 }
-                delay(1_000L)
-            }
-        }
     }
 
     // ── Zoom / centrar ────────────────────────────────────────────────
@@ -380,34 +452,58 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         suggestionsJob?.cancel()
-        _ui.value = _ui.value.copy(isSearchingSuggestions = true, suggestions = emptyList(), errorMsg = null)
+        _ui.value =
+                _ui.value.copy(
+                        isSearchingSuggestions = true,
+                        suggestions = emptyList(),
+                        errorMsg = null
+                )
         val origin = lastLocation
-        suggestionsJob = viewModelScope.launch {
-            val hits = navRouter.suggest(query, origin?.latitude, origin?.longitude)
-            _ui.value = _ui.value.copy(isSearchingSuggestions = false, suggestions = hits)
-        }
+        suggestionsJob =
+                viewModelScope.launch {
+                    val hits = navRouter.suggest(query, origin?.latitude, origin?.longitude)
+                    _ui.value = _ui.value.copy(isSearchingSuggestions = false, suggestions = hits)
+                }
     }
 
     /** Paso 2: el usuario eligió una sugerencia → calcular ruta. */
     fun routeToSuggestion(suggestion: GeocodeSuggestion) {
-        val origin = lastLocation ?: run {
-            _ui.value = _ui.value.copy(errorMsg = "Sin ubicación aún", suggestions = emptyList())
-            return
-        }
-        _ui.value = _ui.value.copy(
-            isSearchingRoute = true,
-            navDestination = suggestion.label,
-            suggestions = emptyList(),
-            errorMsg = null,
-        )
+        val origin =
+                lastLocation
+                        ?: run {
+                            _ui.value =
+                                    _ui.value.copy(
+                                            errorMsg = "Sin ubicación aún",
+                                            suggestions = emptyList()
+                                    )
+                            return
+                        }
+        _ui.value =
+                _ui.value.copy(
+                        isSearchingRoute = true,
+                        navDestination = suggestion.label,
+                        suggestions = emptyList(),
+                        errorMsg = null,
+                )
         viewModelScope.launch {
-            val route = navRouter.route(origin.latitude, origin.longitude, suggestion.lat, suggestion.lon)
+            val route =
+                    navRouter.route(
+                            origin.latitude,
+                            origin.longitude,
+                            suggestion.lat,
+                            suggestion.lon
+                    )
             if (route == null) {
-                _ui.value = _ui.value.copy(isSearchingRoute = false, errorMsg = "No se pudo calcular la ruta")
+                _ui.value =
+                        _ui.value.copy(
+                                isSearchingRoute = false,
+                                errorMsg = "No se pudo calcular la ruta"
+                        )
                 return@launch
             }
             stepIdx = 0
-            _ui.value = _ui.value.copy(isSearchingRoute = false, route = route, currentStepIndex = 0)
+            _ui.value =
+                    _ui.value.copy(isSearchingRoute = false, route = route, currentStepIndex = 0)
             setRouteCallback?.invoke(route.geometry)
             setNavModeCallback?.invoke(true)
             sendCurrentStep()
@@ -419,7 +515,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clearRoute() {
-        _ui.value = _ui.value.copy(route = null, currentStepIndex = 0, navDestination = "", suggestions = emptyList())
+        arrivedClearJob?.cancel()
+        arrivedClearJob = null
+        _ui.value =
+                _ui.value.copy(
+                        route = null,
+                        currentStepIndex = 0,
+                        navDestination = "",
+                        suggestions = emptyList()
+                )
         setRouteCallback?.invoke(emptyList())
         setNavModeCallback?.invoke(false)
         esp32Client.sendNavStep("Sin navegación", 0, 0)
@@ -445,6 +549,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             esp32Client.sendNavStep(step.instruction, step.distanceM, route.etaMin)
         } else {
             esp32Client.sendNavStep("Llegaste al destino", 0, 0)
+            // Estilo Google Maps: cerrar navegación automáticamente tras unos segundos
+            arrivedClearJob?.cancel()
+            arrivedClearJob =
+                    viewModelScope.launch {
+                        delay(6_000L)
+                        clearRoute()
+                    }
         }
     }
 
@@ -459,6 +570,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         wsRetryJob?.cancel()
         autoReconnectJob?.cancel()
         suggestionsJob?.cancel()
+        arrivedClearJob?.cancel()
         esp32Client.disconnect()
     }
 }
