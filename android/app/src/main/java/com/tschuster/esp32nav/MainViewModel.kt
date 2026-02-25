@@ -16,6 +16,7 @@ import com.tschuster.esp32nav.network.NavRouter
 import com.tschuster.esp32nav.network.NetworkManager
 import com.tschuster.esp32nav.network.VectorFetcher
 import com.tschuster.esp32nav.util.VectorRenderer
+import com.tschuster.esp32nav.util.formatEtaMinutes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -81,6 +82,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var suggestionsJob: Job? = null
     private var stepIdx = 0
     private var arrivedClearJob: Job? = null
+    private var recalcJob: Job? = null
+    private var lastRecalcTimeMs: Long = 0L
+
+    private val OFF_ROUTE_TOLERANCE_M = 100f
+    private val RECALC_COOLDOWN_MS = 60_000L
 
     // Callbacks registrados por la UI para controlar el MapView (Android)
     private var enableFollowCallback: (() -> Unit)? = null
@@ -290,6 +296,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     val speedKmh = if (loc.hasSpeed()) (loc.speed * 3.6f).toInt() else 0
                     esp32Client.sendGps(loc.latitude, loc.longitude, speedKmh)
                     advanceNavStep(loc)
+                    checkOffRouteAndRecalc(loc)
                     // Primera ubicación: centrar el mapa explícitamente una sola vez.
                     // Las siguientes actualizaciones las maneja enableFollowLocation().
                     if (!initialCenterDone && setCenterCallback != null) {
@@ -580,6 +587,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun clearRoute() {
         arrivedClearJob?.cancel()
         arrivedClearJob = null
+        recalcJob?.cancel()
+        lastRecalcTimeMs = 0L
         _ui.value =
                 _ui.value.copy(
                         route = null,
@@ -589,7 +598,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 )
         setRouteCallback?.invoke(emptyList())
         setNavModeCallback?.invoke(false)
-        esp32Client.sendNavStep("Sin navegación", 0, 0)
+        esp32Client.sendNavStep("Sin navegación", 0, "0 min")
     }
 
     private fun advanceNavStep(loc: Location) {
@@ -605,13 +614,90 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Distancia mínima en metros desde el punto (lat, lon) a la polilínea de la ruta. */
+    private fun distanceToRoute(
+            lat: Double,
+            lon: Double,
+            geometry: List<Pair<Double, Double>>
+    ): Float {
+        if (geometry.size < 2) return Float.MAX_VALUE
+        var minDist = Float.MAX_VALUE
+        val dist = FloatArray(1)
+        for (i in 0 until geometry.size - 1) {
+            val a = geometry[i]
+            val b = geometry[i + 1]
+            val (closestLat, closestLon) =
+                    closestPointOnSegment(lat, lon, a.first, a.second, b.first, b.second)
+            Location.distanceBetween(lat, lon, closestLat, closestLon, dist)
+            if (dist[0] < minDist) minDist = dist[0]
+        }
+        return minDist
+    }
+
+    /**
+     * Proyección del punto (px,py) sobre el segmento (ax,ay)-(bx,by); devuelve el punto más cercano
+     * en el segmento.
+     */
+    private fun closestPointOnSegment(
+            px: Double,
+            py: Double,
+            ax: Double,
+            ay: Double,
+            bx: Double,
+            by: Double
+    ): Pair<Double, Double> {
+        val dx = bx - ax
+        val dy = by - ay
+        val lenSq = dx * dx + dy * dy
+        if (lenSq <= 0.0) return ax to ay
+        var t = ((px - ax) * dx + (py - ay) * dy) / lenSq
+        t = t.coerceIn(0.0, 1.0)
+        return (ax + t * dx) to (ay + t * dy)
+    }
+
+    private fun checkOffRouteAndRecalc(loc: Location) {
+        val route = _ui.value.route ?: return
+        if (route.geometry.size < 2) return
+        if (recalcJob?.isActive == true) return
+        val now = System.currentTimeMillis()
+        if (lastRecalcTimeMs > 0L && (now - lastRecalcTimeMs) < RECALC_COOLDOWN_MS) return
+        val distM = distanceToRoute(loc.latitude, loc.longitude, route.geometry)
+        if (distM <= OFF_ROUTE_TOLERANCE_M) return
+        Log.i(TAG, "Fuera de ruta (${distM.toInt()} m > $OFF_ROUTE_TOLERANCE_M), recalculando…")
+        recalcJob = viewModelScope.launch { recalculateRoute() }
+    }
+
+    private suspend fun recalculateRoute() {
+        val route = _ui.value.route ?: return
+        val dest = route.geometry.lastOrNull() ?: return
+        val origin = lastLocation ?: return
+        _ui.value = _ui.value.copy(isSearchingRoute = true)
+        val newRoute = navRouter.route(origin.latitude, origin.longitude, dest.first, dest.second)
+        _ui.value = _ui.value.copy(isSearchingRoute = false)
+        if (newRoute == null) {
+            Log.w(TAG, "Recálculo de ruta falló")
+            return
+        }
+        lastRecalcTimeMs = System.currentTimeMillis()
+        stepIdx = 0
+        _ui.value = _ui.value.copy(route = newRoute, currentStepIndex = 0)
+        setRouteCallback?.invoke(newRoute.geometry)
+        setNavModeCallback?.invoke(true)
+        sendCurrentStep()
+        Log.i(TAG, "Ruta recalculada (${newRoute.geometry.size} puntos)")
+    }
+
     private fun sendCurrentStep() {
         val route = _ui.value.route ?: return
         if (stepIdx < route.steps.size) {
             val step = route.steps[stepIdx]
-            esp32Client.sendNavStep(step.instruction, step.distanceM, route.etaMin)
+            esp32Client.sendNavStep(
+                    step.instruction,
+                    step.distanceM,
+                    formatEtaMinutes(route.etaMin)
+            )
         } else {
-            esp32Client.sendNavStep("Llegaste al destino", 0, 0)
+            esp32Client.sendNavStep("Llegaste al destino", 0, "0 min")
             // Estilo Google Maps: cerrar navegación automáticamente tras unos segundos
             arrivedClearJob?.cancel()
             arrivedClearJob =
@@ -634,6 +720,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         autoReconnectJob?.cancel()
         suggestionsJob?.cancel()
         arrivedClearJob?.cancel()
+        recalcJob?.cancel()
         esp32Client.disconnect()
     }
 }

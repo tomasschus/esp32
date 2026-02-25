@@ -64,6 +64,7 @@ import com.tschuster.esp32nav.map.MapController
 import com.tschuster.esp32nav.network.ESP32_PASSWORD
 import com.tschuster.esp32nav.network.GeocodeSuggestion
 import com.tschuster.esp32nav.ui.theme.ESP32NavTheme
+import com.tschuster.esp32nav.util.formatEtaMinutes
 import kotlinx.coroutines.delay
 
 private const val TAG = "ESP32Nav/Main"
@@ -712,7 +713,7 @@ fun NavStepCard(
             Spacer(Modifier.width(12.dp))
             Column(horizontalAlignment = Alignment.End) {
                 Text(
-                        text = "$etaMin min",
+                        text = formatEtaMinutes(etaMin),
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF4DCC88)

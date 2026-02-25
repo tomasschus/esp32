@@ -127,7 +127,8 @@ class Esp32Client {
     }
 
     // ── Enviar paso de navegación ────────────────────────────────
-    fun sendNavStep(step: String, distanceM: Int, etaMin: Int) {
+    /** [etaFormatted] ya debe ser el texto final, p. ej. "1 h 25 min" o "45 min". */
+    fun sendNavStep(step: String, distanceM: Int, etaFormatted: String) {
         val safeStep = step.replace("\"", "'")
         val distStr =
                 if (distanceM >= 1000) {
@@ -135,7 +136,7 @@ class Esp32Client {
                 } else {
                     "$distanceM m"
                 }
-        ws?.send("""{"t":"nav","step":"$safeStep","dist":"$distStr","eta":"$etaMin min"}""")
+        ws?.send("""{"t":"nav","step":"$safeStep","dist":"$distStr","eta":"$etaFormatted"}""")
     }
 
     fun sendNavArrived() {
