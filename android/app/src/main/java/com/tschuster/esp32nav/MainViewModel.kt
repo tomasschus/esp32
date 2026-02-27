@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 private const val TAG = "ESP32Nav/VM"
 private const val PREF_RECENT = "recent_searches"
@@ -52,6 +53,7 @@ data class UiState(
         val isSearchingSuggestions: Boolean = false,
         val recentSearches: List<GeocodeSuggestion> = emptyList(),
         val errorMsg: String? = null,
+        val notifPermissionGranted: Boolean = false,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -102,6 +104,57 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         observeLocation()
         networkManager.requestCellular()
         startAutoReconnect()
+        checkNotifPermission()
+        observePhoneFlows()
+        esp32Client.onMessageReceived = { msg -> handleEsp32Message(msg) }
+    }
+
+    // ── Permisos de notificaciones ─────────────────────────────────────
+    fun checkNotifPermission() {
+        val granted = PhoneNotificationService.isPermissionGranted(getApplication())
+        _ui.value = _ui.value.copy(notifPermissionGranted = granted)
+    }
+
+    // ── Observar flows del PhoneNotificationService ────────────────────
+    private fun observePhoneFlows() {
+        // Notificaciones genéricas (WhatsApp, etc.)
+        PhoneNotificationService.notifFlow
+                .onEach { notif ->
+                    esp32Client.sendNotif(notif.app, notif.title, notif.text)
+                }
+                .launchIn(viewModelScope)
+
+        // Paso de Google Maps
+        PhoneNotificationService.gmapsFlow
+                .filterNotNull()
+                .onEach { g ->
+                    esp32Client.sendGmaps(g.step, g.street, g.dist, g.eta, g.maneuver)
+                }
+                .launchIn(viewModelScope)
+
+        // Estado de media (solo enviar cuando cambia)
+        PhoneNotificationService.mediaFlow
+                .onEach { media ->
+                    if (media != null) {
+                        esp32Client.sendMedia(media.app, media.title, media.artist, media.playing, media.vol)
+                    }
+                }
+                .launchIn(viewModelScope)
+    }
+
+    // ── Mensajes recibidos del ESP32 ───────────────────────────────────
+    private fun handleEsp32Message(msg: String) {
+        try {
+            val json = JSONObject(msg)
+            when (json.optString("t")) {
+                "media_cmd" -> {
+                    val cmd = json.optString("cmd")
+                    if (cmd.isNotBlank()) PhoneNotificationService.executeCommand(cmd)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "handleEsp32Message: parse error: ${e.message}")
+        }
     }
 
     private fun loadRecentSearches(): List<GeocodeSuggestion> {

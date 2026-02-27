@@ -55,18 +55,50 @@ struct nav_step_t {
     char eta[20];
 };
 
+/* ── Tipos de la pantalla de teléfono ───────────────────────────── */
+
+struct gmaps_step_t {
+    char step[64];      /* instrucción de maniobra */
+    char street[48];    /* nombre de calle actual */
+    char dist[16];      /* distancia al próximo paso */
+    char eta[16];       /* tiempo estimado restante */
+    char maneuver[32];  /* "turn-right", "turn-left", "straight", etc. */
+};
+
+struct media_state_t {
+    char    app[24];    /* nombre de la app (YouTube Music, Spotify…) */
+    char    title[48];  /* título de la canción */
+    char    artist[32]; /* artista */
+    bool    playing;    /* true = reproduciendo */
+    uint8_t vol;        /* 0-100 */
+};
+
+struct phone_notif_t {
+    char app[24];    /* nombre de la app */
+    char title[32];  /* remitente / asunto */
+    char text[64];   /* primeras palabras del mensaje */
+};
+
 /* ── Callbacks ───────────────────────────────────────────────────── */
-typedef void (*maps_ws_on_frame_t)(void);                   /* JPEG legacy */
-typedef void (*maps_ws_on_vec_t)(const vec_frame_t &frame); /* frame vectorial */
-typedef void (*maps_ws_on_nav_t)(const nav_step_t &step);   /* paso de nav */
-typedef void (*maps_ws_on_gps_t)(int speed_kmh);            /* velocidad GPS */
+typedef void (*maps_ws_on_frame_t)(void);                        /* JPEG legacy */
+typedef void (*maps_ws_on_vec_t)(const vec_frame_t &frame);      /* frame vectorial */
+typedef void (*maps_ws_on_nav_t)(const nav_step_t &step);        /* paso de nav interno */
+typedef void (*maps_ws_on_gps_t)(int speed_kmh);                 /* velocidad GPS */
+typedef void (*maps_ws_on_gmaps_t)(const gmaps_step_t &step);    /* paso Google Maps */
+typedef void (*maps_ws_on_media_t)(const media_state_t &media);  /* estado de media */
+typedef void (*maps_ws_on_notif_t)(const phone_notif_t &notif);  /* notificación */
 
 /* ── API ─────────────────────────────────────────────────────────── */
+bool maps_ws_init(void);               /* arranca AP + WS server (sin buffer de mapa) */
 bool maps_ws_start(uint16_t          *map_buf,
                    maps_ws_on_frame_t on_frame,
                    maps_ws_on_vec_t   on_vec  = nullptr,
                    maps_ws_on_nav_t   on_nav  = nullptr);
 void maps_ws_set_gps_cb(maps_ws_on_gps_t cb);
+void maps_ws_set_gmaps_cb(maps_ws_on_gmaps_t cb);
+void maps_ws_set_media_cb(maps_ws_on_media_t cb);
+void maps_ws_set_notif_cb(maps_ws_on_notif_t cb);
+void maps_ws_send_media_cmd(const char *cmd);   /* envía {"t":"media_cmd","cmd":"..."} al Android */
 void maps_ws_stop(void);
 bool maps_ws_is_running(void);
 bool maps_ws_has_client(void);

@@ -13,11 +13,13 @@ private const val TAG = "ESP32Nav/WS"
 /**
  * WebSocket client hacia el ESP32.
  *
- * Protocolo: Texto → JSON: {"t":"gps","lat":0.0,"lon":0.0}
- * ```
- *                   {"t":"nav","step":"...","dist":"200m","eta":"12 min"}
- * ```
- * Binario → JPEG bytes directos (sin header)
+ * Protocolo (envío): Texto → JSON: {"t":"gps","lat":0.0,"lon":0.0}
+ *                              {"t":"nav","step":"...","dist":"200m","eta":"12 min"}
+ *                              {"t":"notif","app":"...","title":"...","text":"..."}
+ *                              {"t":"gmaps","step":"...","street":"...","dist":"...","eta":"...","maneuver":"..."}
+ *                              {"t":"media","app":"...","title":"...","artist":"...","playing":true,"vol":75}
+ * Protocolo (recepción): {"t":"media_cmd","cmd":"play"|"pause"|"next"|"prev"|"vol_up"|"vol_down"}
+ * Binario → JPEG bytes directos (legacy)
  */
 class Esp32Client {
 
@@ -33,6 +35,9 @@ class Esp32Client {
 
     private var ws: WebSocket? = null
     private var httpClient: OkHttpClient? = null
+
+    /** Llamado cuando el ESP32 envía un mensaje de texto (p.ej. media_cmd). */
+    var onMessageReceived: ((String) -> Unit)? = null
 
     companion object {
         const val ESP32_IP = "192.168.4.1"
@@ -83,6 +88,9 @@ class Esp32Client {
                         t.printStackTrace()
                         ws = null
                         _state.value = State.ERROR
+                    }
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        onMessageReceived?.invoke(text)
                     }
                     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                         Log.w(TAG, "WebSocket cerrado: code=$code reason=$reason")
@@ -141,6 +149,32 @@ class Esp32Client {
 
     fun sendNavArrived() {
         ws?.send("""{"t":"nav","step":"Llegaste al destino","dist":"0m","eta":"0 min"}""")
+    }
+
+    // ── Enviar notificación genérica ─────────────────────────────
+    fun sendNotif(app: String, title: String, text: String) {
+        val safeApp   = app.replace("\"", "'").take(24)
+        val safeTitle = title.replace("\"", "'").take(32)
+        val safeText  = text.replace("\"", "'").take(60)
+        ws?.send("""{"t":"notif","app":"$safeApp","title":"$safeTitle","text":"$safeText"}""")
+    }
+
+    // ── Enviar paso de Google Maps ───────────────────────────────
+    fun sendGmaps(step: String, street: String, dist: String, eta: String, maneuver: String) {
+        val s   = step.replace("\"", "'").take(60)
+        val st  = street.replace("\"", "'").take(48)
+        val d   = dist.replace("\"", "'").take(16)
+        val e   = eta.replace("\"", "'").take(16)
+        val m   = maneuver.replace("\"", "'").take(32)
+        ws?.send("""{"t":"gmaps","step":"$s","street":"$st","dist":"$d","eta":"$e","maneuver":"$m"}""")
+    }
+
+    // ── Enviar estado de media ───────────────────────────────────
+    fun sendMedia(app: String, title: String, artist: String, playing: Boolean, vol: Int) {
+        val safeApp    = app.replace("\"", "'").take(24)
+        val safeTitle  = title.replace("\"", "'").take(48)
+        val safeArtist = artist.replace("\"", "'").take(32)
+        ws?.send("""{"t":"media","app":"$safeApp","title":"$safeTitle","artist":"$safeArtist","playing":$playing,"vol":$vol}""")
     }
 
     // ── Desconectar ──────────────────────────────────────────────

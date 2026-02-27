@@ -3,6 +3,7 @@
 #include "screen_games.h"
 #include "screen_main_menu.h"
 #include "screen_map.h"
+#include "screen_phone.h"
 #include "screen_player.h"
 #include "screen_settings.h"
 #include "screen_timer.h"
@@ -24,7 +25,8 @@ static const disp_rot_t k_screen_rot[] = {
     [UI_SCREEN_WIFI_ANALYZER] = DISP_ROT_LANDSCAPE,
     [UI_SCREEN_TIMER] = DISP_ROT_LANDSCAPE,
     [UI_SCREEN_PLAYER] = DISP_ROT_LANDSCAPE,
-    [UI_SCREEN_MAPS] = DISP_ROT_PORTRAIT,
+    [UI_SCREEN_MAPS]   = DISP_ROT_PORTRAIT,
+    [UI_SCREEN_PHONE]  = DISP_ROT_LANDSCAPE,
 };
 
 void ui_init() {
@@ -37,6 +39,7 @@ void ui_init() {
   screen_timer_create();
   screen_player_create();
   screen_map_create();
+  screen_phone_create();
 
   /* Cargar el menú principal al inicio */
   lv_screen_load(screen_main_menu_get());
@@ -90,6 +93,10 @@ void ui_navigate_to(ui_screen_id_t screen_id, bool back) {
   case UI_SCREEN_MAPS:
     screen_map_start();
     target = screen_map_get();
+    break;
+  case UI_SCREEN_PHONE:
+    screen_phone_start();
+    target = screen_phone_get();
     break;
   default:
     return;

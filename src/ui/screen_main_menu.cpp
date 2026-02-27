@@ -20,7 +20,7 @@ static void create_list_item(lv_obj_t *parent,
 
     /* Tarjeta */
     lv_obj_t *card = lv_obj_create(parent);
-    lv_obj_set_size(card, 454, 58);
+    lv_obj_set_size(card, 454, 44);
     lv_obj_set_style_bg_color(card, lv_color_hex(0x1F2937), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, 10, 0);
@@ -36,7 +36,7 @@ static void create_list_item(lv_obj_t *parent,
 
     /* Caja de ícono (izquierda) */
     lv_obj_t *icon_box = lv_obj_create(card);
-    lv_obj_set_size(icon_box, 42, 42);
+    lv_obj_set_size(icon_box, 34, 34);
     lv_obj_align(icon_box, LV_ALIGN_LEFT_MID, 8, 0);
     lv_obj_set_style_bg_color(icon_box, icon_bg, 0);
     lv_obj_set_style_bg_opa(icon_box, LV_OPA_COVER, 0);
@@ -56,14 +56,14 @@ static void create_list_item(lv_obj_t *parent,
     lv_label_set_text(lbl_name, name);
     lv_obj_set_style_text_font(lbl_name, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(lbl_name, COLOR_TEXT, 0);
-    lv_obj_align(lbl_name, LV_ALIGN_LEFT_MID, 62, -9);
+    lv_obj_align(lbl_name, LV_ALIGN_LEFT_MID, 52, -7);
 
     /* Descripción */
     lv_obj_t *lbl_desc = lv_label_create(card);
     lv_label_set_text(lbl_desc, desc);
     lv_obj_set_style_text_font(lbl_desc, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lbl_desc, COLOR_SUBTEXT, 0);
-    lv_obj_align(lbl_desc, LV_ALIGN_LEFT_MID, 62, 10);
+    lv_obj_align(lbl_desc, LV_ALIGN_LEFT_MID, 52, 7);
 
     /* Flecha derecha */
     lv_obj_t *arrow = lv_label_create(card);
@@ -139,8 +139,8 @@ void screen_main_menu_create() {
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(list, 0, 0);
     lv_obj_set_style_pad_hor(list, 13, 0);
-    lv_obj_set_style_pad_ver(list, 10, 0);
-    lv_obj_set_style_pad_row(list, 8, 0);
+    lv_obj_set_style_pad_ver(list, 8, 0);
+    lv_obj_set_style_pad_row(list, 6, 0);
     lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
@@ -148,6 +148,11 @@ void screen_main_menu_create() {
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     /* ── Ítems ──────────────────────────────────────────────── */
+    create_list_item(list,
+        LV_SYMBOL_CALL,     lv_color_hex(0x1A7A5A),
+        "TELEFONO",         "Notificaciones y musica",
+        UI_SCREEN_PHONE);
+
     create_list_item(list,
         LV_SYMBOL_GPS,      lv_color_hex(0x1A4DA6),
         "MAPA",             "Navegacion GPS",

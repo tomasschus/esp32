@@ -21,6 +21,7 @@ typedef enum {
   UI_SCREEN_TIMER,
   UI_SCREEN_PLAYER,
   UI_SCREEN_MAPS,
+  UI_SCREEN_PHONE,
 } ui_screen_id_t;
 
 /** Navegar a una pantalla (cambio instantáneo, sin animación). */

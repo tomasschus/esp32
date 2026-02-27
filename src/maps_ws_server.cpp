@@ -26,10 +26,13 @@
 static AsyncWebServer    *s_server   = nullptr;
 static AsyncWebSocket    *s_ws       = nullptr;
 static uint16_t          *s_map_buf  = nullptr;
-static maps_ws_on_frame_t s_on_frame = nullptr;
-static maps_ws_on_vec_t   s_on_vec   = nullptr;
-static maps_ws_on_nav_t   s_on_nav   = nullptr;
-static maps_ws_on_gps_t   s_on_gps   = nullptr;
+static maps_ws_on_frame_t  s_on_frame = nullptr;
+static maps_ws_on_vec_t    s_on_vec   = nullptr;
+static maps_ws_on_nav_t    s_on_nav   = nullptr;
+static maps_ws_on_gps_t    s_on_gps   = nullptr;
+static maps_ws_on_gmaps_t  s_on_gmaps = nullptr;
+static maps_ws_on_media_t  s_on_media = nullptr;
+static maps_ws_on_notif_t  s_on_notif = nullptr;
 static bool               s_has_client = false;
 static uint8_t           *s_jpeg_buf = nullptr;
 static char              *s_text_buf = nullptr;
@@ -113,6 +116,51 @@ static void parse_vec_frame(const char *json, size_t len) {
   Serial.printf("[Maps] vec: roads=%u route=%u labels=%u pos=(%d,%d)\n",
                 frame.n_roads, frame.n_route, frame.n_labels, frame.pos_x, frame.pos_y);
   s_on_vec(frame);
+}
+
+/* ── Parser de Google Maps ───────────────────────────────────────── */
+static void parse_gmaps_step(const char *json, size_t len) {
+  if (!s_on_gmaps) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, json, len) != DeserializationError::Ok) return;
+  static gmaps_step_t step;
+  strlcpy(step.step,     doc["step"]     | "", sizeof(step.step));
+  strlcpy(step.street,   doc["street"]   | "", sizeof(step.street));
+  strlcpy(step.dist,     doc["dist"]     | "", sizeof(step.dist));
+  strlcpy(step.eta,      doc["eta"]      | "", sizeof(step.eta));
+  strlcpy(step.maneuver, doc["maneuver"] | "straight", sizeof(step.maneuver));
+  Serial.printf("[Maps] gmaps: %s | %s | %s | %s\n",
+                step.step, step.street, step.dist, step.eta);
+  s_on_gmaps(step);
+}
+
+/* ── Parser de estado de media ───────────────────────────────────── */
+static void parse_media_state(const char *json, size_t len) {
+  if (!s_on_media) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, json, len) != DeserializationError::Ok) return;
+  static media_state_t media;
+  strlcpy(media.app,    doc["app"]    | "", sizeof(media.app));
+  strlcpy(media.title,  doc["title"]  | "", sizeof(media.title));
+  strlcpy(media.artist, doc["artist"] | "", sizeof(media.artist));
+  media.playing = doc["playing"] | false;
+  media.vol     = doc["vol"]     | 0;
+  Serial.printf("[Maps] media: %s - %s (%s) vol=%d\n",
+                media.title, media.artist, media.playing ? "play" : "pause", media.vol);
+  s_on_media(media);
+}
+
+/* ── Parser de notificación ──────────────────────────────────────── */
+static void parse_phone_notif(const char *json, size_t len) {
+  if (!s_on_notif) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, json, len) != DeserializationError::Ok) return;
+  static phone_notif_t notif;
+  strlcpy(notif.app,   doc["app"]   | "", sizeof(notif.app));
+  strlcpy(notif.title, doc["title"] | "", sizeof(notif.title));
+  strlcpy(notif.text,  doc["text"]  | "", sizeof(notif.text));
+  Serial.printf("[Maps] notif: [%s] %s: %s\n", notif.app, notif.title, notif.text);
+  s_on_notif(notif);
 }
 
 /* ── Parser de paso de navegación ────────────────────────────────── */
@@ -223,13 +271,36 @@ static void on_ws_event(AsyncWebSocket *ws, AsyncWebSocketClient *client,
       parse_nav_step(s_text_buf, total);
     else if (strncmp(t_start, "gps", 3) == 0)
       parse_gps_spd(s_text_buf, total);
+    else if (strncmp(t_start, "gmaps", 5) == 0)
+      parse_gmaps_step(s_text_buf, total);
+    else if (strncmp(t_start, "media", 5) == 0)
+      parse_media_state(s_text_buf, total);
+    else if (strncmp(t_start, "notif", 5) == 0)
+      parse_phone_notif(s_text_buf, total);
   }
+}
+
+/* ── maps_ws_init ────────────────────────────────────────────────── */
+bool maps_ws_init() {
+  if (s_server) return true;   /* ya está corriendo */
+
+  WiFi.mode(WIFI_AP);
+  if (!WiFi.softAP(MAPS_AP_SSID, MAPS_AP_PASS, 1, 0, 4)) return false;
+
+  s_server = new AsyncWebServer(MAPS_WS_PORT);
+  s_ws     = new AsyncWebSocket("/ws");
+  s_ws->onEvent(on_ws_event);
+  s_server->addHandler(s_ws);
+  s_server->begin();
+
+  Serial.printf("[Maps] AP %s OK, ws://192.168.4.1:%d/ws\n",
+                MAPS_AP_SSID, MAPS_WS_PORT);
+  return true;
 }
 
 /* ── maps_ws_start ───────────────────────────────────────────────── */
 bool maps_ws_start(uint16_t *map_buf, maps_ws_on_frame_t on_frame,
                    maps_ws_on_vec_t on_vec, maps_ws_on_nav_t on_nav) {
-  if (s_server) return true;
   if (!map_buf || !on_frame) return false;
 
   if (!s_vec_frame) {
@@ -246,25 +317,22 @@ bool maps_ws_start(uint16_t *map_buf, maps_ws_on_frame_t on_frame,
   s_on_vec   = on_vec;
   s_on_nav   = on_nav;
 
-  WiFi.mode(WIFI_AP);
-  if (!WiFi.softAP(MAPS_AP_SSID, MAPS_AP_PASS, 1, 0, 4)) {
-    s_map_buf = nullptr; s_on_frame = nullptr;
-    return false;
-  }
-
-  s_server = new AsyncWebServer(MAPS_WS_PORT);
-  s_ws     = new AsyncWebSocket("/ws");
-  s_ws->onEvent(on_ws_event);
-  s_server->addHandler(s_ws);
-  s_server->begin();
-
-  Serial.printf("[Maps] AP %s OK, ws://192.168.4.1:%d/ws\n",
-                MAPS_AP_SSID, MAPS_WS_PORT);
-  return true;
+  return maps_ws_init();
 }
 
-/* ── maps_ws_set_gps_cb ──────────────────────────────────────────── */
-void maps_ws_set_gps_cb(maps_ws_on_gps_t cb) { s_on_gps = cb; }
+/* ── maps_ws_set_*_cb ────────────────────────────────────────────── */
+void maps_ws_set_gps_cb(maps_ws_on_gps_t cb)     { s_on_gps   = cb; }
+void maps_ws_set_gmaps_cb(maps_ws_on_gmaps_t cb)  { s_on_gmaps = cb; }
+void maps_ws_set_media_cb(maps_ws_on_media_t cb)  { s_on_media = cb; }
+void maps_ws_set_notif_cb(maps_ws_on_notif_t cb)  { s_on_notif = cb; }
+
+/* ── maps_ws_send_media_cmd ──────────────────────────────────────── */
+void maps_ws_send_media_cmd(const char *cmd) {
+  if (!s_ws || !s_has_client) return;
+  char buf[64];
+  snprintf(buf, sizeof(buf), "{\"t\":\"media_cmd\",\"cmd\":\"%s\"}", cmd);
+  s_ws->textAll(buf);
+}
 
 /* ── maps_ws_stop ────────────────────────────────────────────────── */
 void maps_ws_stop(void) {
@@ -277,7 +345,10 @@ void maps_ws_stop(void) {
   s_on_frame = nullptr;
   s_on_vec   = nullptr;
   s_on_nav   = nullptr;
-  s_on_gps     = nullptr;
+  s_on_gps   = nullptr;
+  s_on_gmaps = nullptr;
+  s_on_media = nullptr;
+  s_on_notif = nullptr;
   s_has_client = false;
   WiFi.softAPdisconnect(true);
 }

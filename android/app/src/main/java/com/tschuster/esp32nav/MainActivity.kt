@@ -1,7 +1,9 @@
 package com.tschuster.esp32nav
 
 import android.Manifest
+import android.content.Intent
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -27,8 +29,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -53,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -144,6 +149,9 @@ class MainActivity : ComponentActivity() {
                         onZoomOut = { vm.setZoom(state.zoom - 1) },
                         onCenterLocation = vm::centerOnLocation,
                         onDismissError = vm::dismissError,
+                        onOpenNotifSettings = {
+                            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                        },
                 )
             }
         }
@@ -152,6 +160,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         mapController.onResume()
+        vm.checkNotifPermission()   // re-chequear al volver de Ajustes
     }
     override fun onPause() {
         super.onPause()
@@ -177,7 +186,47 @@ fun MainScreen(
         onZoomOut: () -> Unit,
         onCenterLocation: () -> Unit,
         onDismissError: () -> Unit,
+        onOpenNotifSettings: () -> Unit,
 ) {
+    // Dialog de permiso de notificaciones (solo si no fue concedido)
+    var notifDialogDismissed by remember { mutableStateOf(false) }
+    if (!state.notifPermissionGranted && !notifDialogDismissed) {
+        AlertDialog(
+            onDismissRequest = { notifDialogDismissed = true },
+            icon = {
+                Icon(
+                    Icons.Default.Notifications,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            },
+            title = { Text("Acceso a notificaciones") },
+            text = {
+                Text(
+                    "Para mostrar WhatsApp, Google Maps y controles de música en el ESP32, " +
+                    "la app necesita acceso a las notificaciones del sistema.\n\n" +
+                    "Se abrirá Ajustes → buscá \"ESP32 Nav\" y activalo."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    notifDialogDismissed = true
+                    onOpenNotifSettings()
+                }) {
+                    Text("Ir a Ajustes", color = MaterialTheme.colorScheme.primary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { notifDialogDismissed = true }) {
+                    Text("Ahora no", color = Color(0x88EEEEEE))
+                }
+            },
+            containerColor = Color(0xFF1A1A2E),
+            titleContentColor = Color(0xFFEEEEEE),
+            textContentColor = Color(0xCCEEEEEE),
+        )
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
 
         // ── CAPA 0: Mapa ocupa toda la pantalla ──────────────────────────
